@@ -1,0 +1,94 @@
+﻿# LLM provider registry - DATA, not code.
+#
+# Free-tier limits change monthly: when a provider changes its quotas or model
+# list, edit this file. No code change, no release. Verify current limits with
+# `uv run python scripts/doctor.py`.
+#
+# API keys are NEVER stored here. `api_key_ref` names a credential in the
+# Windows Credential Manager under service "myagent"; set one with:
+#   uv run python scripts/doctor.py --set-key <provider>
+#
+# Quota values below are conservative mid-2026 ballparks for the free tiers.
+
+providers:
+  groq:
+    base_url: https://api.groq.com/openai/v1
+    api_key_ref: groq_api_key
+  gemini:
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+    api_key_ref: gemini_api_key
+  openrouter:
+    base_url: https://openrouter.ai/api/v1
+    api_key_ref: openrouter_api_key
+
+models:
+  - provider: groq
+    id: llama-3.3-70b-versatile
+    speed: fast
+    context: 131072
+    supports_tools: true
+    supports_vision: false
+    trains_on_data: false
+    quota: { rpm: 30, rpd: 1000, tpm: 12000 }
+
+  - provider: groq
+    id: llama-3.1-8b-instant
+    speed: fastest
+    context: 131072
+    supports_tools: true
+    supports_vision: false
+    trains_on_data: false
+    quota: { rpm: 30, rpd: 14400, tpm: 6000 }
+
+  - provider: gemini
+    id: gemini-3.6-flash
+    speed: fast
+    context: 1048576
+    supports_tools: true
+    supports_vision: true
+    trains_on_data: true
+    quota: { rpm: 10, rpd: 250, tpm: 250000 }
+
+  - provider: gemini
+    id: gemini-3.5-flash-lite
+    speed: fastest
+    context: 1048576
+    supports_tools: true
+    supports_vision: true
+    trains_on_data: true
+    quota: { rpm: 15, rpd: 1000, tpm: 250000 }
+
+  - provider: openrouter
+    id: nvidia/nemotron-3-super-120b-a12b:free
+    speed: medium
+    context: 262144
+    supports_tools: true
+    supports_vision: false
+    trains_on_data: true
+    quota: { rpm: 20, rpd: 50, tpm: 100000 }
+
+# Ranked candidate lists per task class. The gateway walks each list top-down,
+# skipping models that are quota-exhausted, cooling down, or privacy-excluded.
+routing:
+  triage:
+    - groq/llama-3.1-8b-instant
+    - gemini/gemini-3.5-flash-lite
+    - openrouter/nvidia/nemotron-3-super-120b-a12b:free
+  conversation:
+    - groq/llama-3.3-70b-versatile
+    - gemini/gemini-3.6-flash
+    - openrouter/nvidia/nemotron-3-super-120b-a12b:free
+  planning:
+    - gemini/gemini-3.6-flash
+    - groq/llama-3.3-70b-versatile
+    - openrouter/nvidia/nemotron-3-super-120b-a12b:free
+  long_context:
+    - gemini/gemini-3.6-flash
+    - gemini/gemini-3.5-flash-lite
+  vision:
+    - gemini/gemini-3.6-flash
+    - gemini/gemini-3.5-flash-lite
+  background:
+    - gemini/gemini-3.5-flash-lite
+    - groq/llama-3.1-8b-instant
+    - openrouter/nvidia/nemotron-3-super-120b-a12b:free

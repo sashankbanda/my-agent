@@ -1,0 +1,42 @@
+# MyAgent default configuration.
+#
+# Every value here can be overridden by an environment variable using the
+# MYAGENT_ prefix with __ separating nesting levels, e.g.:
+#   MYAGENT_LOGGING__LEVEL=DEBUG
+#   MYAGENT_APP__DATA_DIR=D:/data/myagent
+#
+# Secrets never live in this file (see .env.example header).
+
+app:
+  name: myagent
+  # Directory for the SQLite database and other local state.
+  # null -> resolved at runtime to %LOCALAPPDATA%/MyAgent
+  data_dir: null
+
+logging:
+  # DEBUG | INFO | WARNING | ERROR
+  level: INFO
+  # console (pretty, development) | json (JSON lines, production)
+  format: console
+
+server:
+  host: 127.0.0.1
+  port: 8765
+
+# Encrypted backups. Enable after choosing a backend:
+#   drive  -> needs a Google OAuth client json (vault.client_secrets), then
+#             one-time consent: uv run python scripts/restore.py --auth
+#   folder -> needs only vault.local_path (e.g. a NAS or synced directory)
+vault:
+  enabled: true
+  backend: drive
+  folder_name: MyAgent Vault
+  local_path: null
+  # Google OAuth Desktop-app client json (outside the repo, never committed).
+  client_secrets: C:/Users/shank/AppData/Local/MyAgent/client_secrets.json
+  snapshot_hour: 3
+  keep_daily: 30
+  keep_monthly: 12
+
+# Feature flags; subsystems added by later milestones register their flags here.
+features: {}

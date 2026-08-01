@@ -1,0 +1,51 @@
+# Voice satellite configuration.
+#
+# The voice process is a separate program (uv run python -m myagent.voice)
+# that talks to the kernel over WebSocket only. Everything here is local and
+# CPU-only; audio never leaves this machine (wake word, VAD, STT, TTS all
+# run on-device).
+#
+# Models are downloaded once by: uv run python scripts/setup_voice.py
+
+mode: wake            # wake | ptt | continuous
+kernel_url: ws://127.0.0.1:8765/voice
+
+# null (input)  -> AUTO: probe devices and pick the one with a live signal,
+#                  re-probing whenever input goes silent (device switches,
+#                  buds parked in their case, unplugged headsets...).
+# null (output) -> system default, refreshed during quiet-time resyncs.
+# Pin a specific device only if auto picks wrong; list names with:
+#   uv run python -m myagent.voice --list-devices
+input_device: null
+output_device: null
+
+# null -> %LOCALAPPDATA%/MyAgent/models
+models_dir: null
+
+wake:
+  # openWakeWord built-in model names: hey_jarvis, alexa, hey_mycroft, ...
+  model: hey_jarvis
+  # 0.4 suits a laptop mic array at arm's length; run --mic-check and watch
+  # the "wake" column while saying the wake word to tune this with data.
+  threshold: 0.4
+  # Seconds after a wake-up during which follow-up speech needs no wake word.
+  followup_window: 8.0
+
+vad:
+  threshold: 0.5
+  min_speech_ms: 250    # shorter bursts are ignored as noise
+  silence_ms: 700       # this much silence ends the utterance
+  max_utterance_s: 30   # hard cap; force-close pathological segments
+
+stt:
+  model: base.en        # faster-whisper size: tiny.en | base.en | small.en ...
+  compute_type: int8    # CPU-friendly quantization
+
+tts:
+  # windows: instant OS voices (default - works on any CPU, no downloads)
+  # kokoro:  near-human quality; only for CPUs that synthesize faster than
+  #          real time (this laptop measured 7s per 3s of audio -> windows)
+  engine: windows
+  windows_voice: null   # substring of a voice name, e.g. "Zira"; null = default
+  voice: af_heart       # kokoro voice id (engine: kokoro)
+  speed: 1.0
