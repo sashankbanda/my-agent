@@ -24,6 +24,11 @@ log = get_logger(__name__)
 
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+# Lets a child opt out of the job with CREATE_BREAKAWAY_FROM_JOB. Only code
+# that asks can leave, so MyAgent's own satellites are still cleaned up; this
+# exists so that apps the *user* asked us to open are not killed when MyAgent
+# stops. Without it, "open chrome" gave you a browser that died with us.
+JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800
 PROCESS_SET_QUOTA = 0x0100
 PROCESS_TERMINATE = 0x0001
 
@@ -77,7 +82,9 @@ class ProcessGroup:
             log.warning("job_object_unavailable")
             return
         limits = _ExtendedLimitInformation()
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        limits.BasicLimitInformation.LimitFlags = (
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK
+        )
         if not kernel32.SetInformationJobObject(
             handle,
             JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,

@@ -287,6 +287,13 @@ button.danger {
   animation: pulse 0.6s ease-in-out infinite;
 }
 
+/* Muted has to read as "deliberately off", not as "broken" or "idle". */
+.orb-muted .orb-core {
+  background: radial-gradient(circle at 35% 30%, #5a2530, #34161d);
+  border-color: #b0505f;
+  box-shadow: 0 0 18px rgba(200, 80, 100, 0.35);
+}
+
 @keyframes pulse {
   0%,
   100% {

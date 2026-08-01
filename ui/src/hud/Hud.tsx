@@ -17,6 +17,7 @@ const STATE_LABEL: Record<string, string> = {
   listening: "hearing you",
   thinking: "thinking",
   speaking: "speaking",
+  muted: "mic muted",
 };
 
 function Orb({ state, online }: { state: string; online: boolean }) {
@@ -39,6 +40,7 @@ function StatusBar({ status, online }: { status: Status | null; online: boolean 
           <span className={status.voice.connected ? "pill ok" : "pill dim"}>
             voice {status.voice.connected ? status.voice.mode : "off"}
           </span>
+          {status.voice.muted && <span className="pill bad">MIC MUTED</span>}
           <span className="pill dim">wake: {status.voice.wake_word}</span>
           <span className="pill dim">stt: {status.voice.stt_engine}</span>
           <span className="pill dim">up {uptime}m</span>
@@ -195,6 +197,23 @@ export default function Hud() {
     await fetch(status?.kill_switch ? "/kill/release" : "/kill", { method: "POST" });
   }
 
+  // Stop is not the kill switch: it ends the answer being spoken or written
+  // right now, which is what you want when a reply is wrong or too long.
+  async function stopNow() {
+    await fetch("/stop", { method: "POST" });
+    setBusy(false);
+  }
+
+  async function toggleMute() {
+    await fetch("/voice/mute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+  }
+
+  const muted = status?.voice.muted ?? false;
+
   return (
     <div className="hud">
       {pending.length > 0 && <ConfirmDialog request={pending[0]} onDecide={decide} />}
@@ -202,8 +221,22 @@ export default function Hud() {
       <header className="hud-head">
         <h1>MyAgent</h1>
         <StatusBar status={status} online={online} />
-        <button className={status?.kill_switch ? "" : "danger"} onClick={() => void toggleKill()}>
-          {status?.kill_switch ? "Re-enable" : "Stop"}
+        <button
+          className={muted ? "danger" : ""}
+          onClick={() => void toggleMute()}
+          title="Mute the microphone (Ctrl+Alt+M works anywhere)"
+        >
+          {muted ? "Mic off" : "Mic on"}
+        </button>
+        <button onClick={() => void stopNow()} title="Stop the current answer">
+          Stop
+        </button>
+        <button
+          className={status?.kill_switch ? "" : "danger"}
+          onClick={() => void toggleKill()}
+          title="Block every action until re-enabled"
+        >
+          {status?.kill_switch ? "Re-enable" : "Emergency"}
         </button>
       </header>
 

@@ -15,7 +15,7 @@ import pytest
 
 from myagent.config import Settings, ToolSettings
 from myagent.core import history
-from myagent.core.loop import AgentLoop
+from myagent.core.loop import LEAKED_CALL_REPLY, AgentLoop
 from myagent.gateway.gateway import Gateway
 from myagent.gateway.health import HealthTracker
 from myagent.gateway.quota import QuotaGovernor
@@ -114,8 +114,15 @@ def build(
 
 
 async def drain(loop: AgentLoop, session: str, text: str) -> str:
+    """Collect the turn the way a real client does - honouring ``reset``.
+
+    A reset means "discard what I sent you"; a consumer that ignores it shows
+    text the loop deliberately withdrew.
+    """
     delivered = ""
     async for chunk in loop.respond(session, text):
+        if chunk.reset:
+            delivered = ""
         delivered += chunk.delta
     return delivered
 
@@ -251,3 +258,40 @@ async def test_plain_conversation_needs_no_tools(
     answer = await drain(loop, session, "hi")
     assert client.index == 1
     assert "Hello there!" in answer
+
+
+async def test_an_answer_with_a_real_tool_call_behind_it_is_kept(
+    db: sqlite3.Connection, settings: Settings, sandbox: Path
+) -> None:
+    """Truth beats brevity.
+
+    The anti-deflection guard replaces answers that only *describe* steps. An
+    answer that actually ran a tool must survive even if it is wordy and
+    mentions Explorer, or the guard would be discarding correct work.
+    """
+    loop, _ = build(
+        settings,
+        sandbox,
+        turns=[
+            ("Checking.", [call("files.list_dir", path=str(sandbox))]),
+            ("You can use File Explorer too, but there is 1 item in that folder.", []),
+        ],
+    )
+    session = loop.ensure_session(None)
+    answer = await drain(loop, session, "list my downloads folder")
+
+    assert "1 item" in answer
+    assert answer.strip() != LEAKED_CALL_REPLY
+
+
+async def test_a_described_action_with_no_tool_call_is_replaced(
+    db: sqlite3.Connection, settings: Settings, sandbox: Path
+) -> None:
+    """The complaint, as a test: told to do it, it explained how instead."""
+    guide = "You can use File Explorer and right-click to see that."
+    loop, _ = build(settings, sandbox, turns=[(guide, []), (guide, [])])
+    session = loop.ensure_session(None)
+    answer = await drain(loop, session, "list my downloads folder")
+
+    assert answer.strip() == LEAKED_CALL_REPLY
+    assert "File Explorer" not in answer

@@ -34,7 +34,8 @@ ALIASES = {
     "edge": "msedge.exe",
     "microsoft edge": "msedge.exe",
     "firefox": "firefox.exe",
-    "browser": "msedge.exe",
+    "brave": "brave.exe",
+    "opera": "opera.exe",
     "notepad": "notepad.exe",
     "calculator": "calc.exe",
     "calc": "calc.exe",
@@ -46,7 +47,22 @@ ALIASES = {
     "vs code": "code",
     "vscode": "code",
     "visual studio code": "code",
+    "word": "winword.exe",
+    "excel": "excel.exe",
+    "powerpoint": "powerpnt.exe",
+    "outlook": "outlook.exe",
+    "camera": "microsoft.windows.camera:",
+    "photos": "ms-photos:",
+    "store": "ms-windows-store:",
+    "microsoft store": "ms-windows-store:",
 }
+
+# Names that mean "whatever the user's default browser is" rather than a
+# specific program. Hardcoding Edge here was wrong: it opened a browser the
+# user does not use, which reads as the assistant ignoring the request.
+BROWSER_WORDS = frozenset({"browser", "web browser", "the browser", "internet", "web"})
+
+HTTP_USER_CHOICE = r"SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice"
 
 
 def _registry_app_path(name: str) -> Path | None:
@@ -95,6 +111,29 @@ def _shortcut_for(name: str) -> Path | None:
     return None
 
 
+def default_browser() -> str | None:
+    """The executable Windows uses for http links, or None if unreadable.
+
+    Read from the UserChoice association rather than assumed, so "open my
+    browser" opens the browser the user actually chose.
+    """
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, HTTP_USER_CHOICE) as key:
+            prog_id, _ = winreg.QueryValueEx(key, "ProgId")
+    except OSError:
+        return None
+    try:
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, rf"{prog_id}\shell\open\command") as key:
+            command, _ = winreg.QueryValueEx(key, "")
+    except OSError:
+        return None
+    # The command is a template: "C:\...\chrome.exe" --single-argument %1
+    text = str(command).strip()
+    quoted = text.startswith('"')
+    executable = text[1:].split('"', 1)[0] if quoted else text.split(" ", 1)[0]
+    return executable if Path(executable).exists() else None
+
+
 def find_application(name: str) -> tuple[str, str] | None:
     """Resolve a spoken app name to something launchable.
 
@@ -103,6 +142,10 @@ def find_application(name: str) -> tuple[str, str] | None:
     or None when nothing matches.
     """
     spoken = name.strip().lower()
+    if spoken in BROWSER_WORDS:
+        browser = default_browser()
+        if browser is not None:
+            return ("exe", browser)
     resolved = ALIASES.get(spoken, name.strip())
     if resolved.endswith(":"):  # protocol handler, e.g. ms-settings:
         return ("uri", resolved)

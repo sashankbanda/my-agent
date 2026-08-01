@@ -42,6 +42,7 @@ STATE_STYLE: dict[str, tuple[str, str, str]] = {
     "listening": ("#1f5a41", "#46c48b", "hearing you"),
     "thinking": ("#5c4a22", "#e6b054", "thinking"),
     "speaking": ("#2f4bb0", "#6d8bff", "speaking"),
+    "muted": ("#4a1f28", "#b0505f", "mic muted"),
     "down": ("#3a1d1d", "#e06a6a", "kernel down"),
 }
 
@@ -196,6 +197,11 @@ class Overlay:
         self.menu = tk.Menu(self.root, tearoff=0, bg="#14171f", fg="#e7e9f0")
         self.menu.add_command(label="Open HUD", command=self.open_hud)
         self.menu.add_separator()
+        self.menu.add_command(label="Stop talking", command=lambda: self._post("/stop"))
+        self.menu.add_command(
+            label="Mute / unmute mic  (Ctrl+Alt+M)", command=lambda: self._post("/voice/mute")
+        )
+        self.menu.add_separator()
         self.menu.add_command(label="Emergency stop", command=lambda: self._post("/kill"))
         self.menu.add_command(
             label="Re-enable actions", command=lambda: self._post("/kill/release")
@@ -278,6 +284,10 @@ class Overlay:
         elif kind == "ToolCallCompleted":
             ok = data.get("ok")
             self.caption_text = f"{data.get('tool')} {'done' if ok else 'failed'}"
+        elif kind == "VoiceMuted":
+            self.caption_text = "mic muted" if data.get("muted") else "mic live"
+        elif kind == "UserStopped":
+            self.caption_text = "stopped"
         elif kind == "KillSwitchEngaged":
             self.caption_text = "EMERGENCY STOP"
         elif kind == "VoiceDisconnected":

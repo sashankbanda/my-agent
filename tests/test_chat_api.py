@@ -50,7 +50,7 @@ def test_chat_streams_deltas_and_done(settings: Settings) -> None:
     assert "session_id" in events[0]
     deltas = "".join(e["delta"] for e in events if "delta" in e)
     assert deltas == "Hello!"
-    assert events[-1] == {"done": True, "model": "p1/m"}
+    assert events[-1] == {"done": True, "model": "p1/m", "stopped": False}
 
 
 def test_chat_reuses_session(settings: Settings) -> None:

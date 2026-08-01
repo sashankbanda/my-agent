@@ -65,6 +65,15 @@ def append_message(
             )
 
 
+def count_messages(db_path: Path, session_id: str) -> int:
+    """How many messages a session holds, without loading any of them."""
+    with connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    return int(row[0])
+
+
 def get_messages(db_path: Path, session_id: str, limit: int | None = None) -> list[dict[str, Any]]:
     """Messages of a session in chronological order (the last ``limit`` if set)."""
     query = (

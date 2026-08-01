@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -192,7 +193,11 @@ async def test_status_command_runs_the_tool_without_the_model(
     session = loop.ensure_session(None)
     reply = await run(loop, session, "what's my battery")
     assert client.calls == []
-    assert "CPU" in reply  # formatted from the real tool result
+    # Answers the question that was asked - a battery reading, not a dump of
+    # every hardware statistic the tool happens to return.
+    assert "%" in reply
+    assert "CPU" not in reply
+    assert "disk" not in reply
     types = [row["type"] for row in db.execute("SELECT type FROM events ORDER BY id")]
     assert "FastPathHandled" in types
     assert "ToolCallCompleted" in types  # the tool really ran
@@ -276,3 +281,107 @@ def test_confirmation_required_tools_are_not_fast_pathed() -> None:
     for phrase in ("delete my downloads", "run npm install", "close chrome", "forget everything"):
         intent = fastpath.match(phrase)
         assert intent is None or intent.tool not in dangerous, f"{phrase!r} reached {intent}"
+
+
+class TestSpokenPhrasings:
+    """Speech-to-text output, not tidy typing.
+
+    Whisper drops apostrophes and sometimes emits the curly one; each miss
+    used to send a free, instant question to a paid model instead.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        ["what's my battery", "whats my battery", "what\u2019s my battery", "battery"],
+    )
+    def test_battery_is_recognized_however_it_is_written(self, text: str) -> None:
+        intent = fastpath.match(text)
+        assert intent is not None
+        assert intent.subject == "battery"
+
+    @pytest.mark.parametrize(
+        ("text", "subject"),
+        [
+            ("gpu usage percentage", "gpu"),
+            ("cpu usage", "cpu"),
+            ("disk space left", "disk"),
+            ("hows my ram", "ram"),
+        ],
+    )
+    def test_measurement_words_do_not_break_the_match(self, text: str, subject: str) -> None:
+        intent = fastpath.match(text)
+        assert intent is not None
+        assert intent.subject == subject
+
+    def test_gpu_asks_the_tool_for_the_expensive_counter(self) -> None:
+        intent = fastpath.match("gpu usage")
+        assert intent is not None
+        assert intent.args == {"include_gpu": True}
+
+    def test_cpu_does_not_pay_for_the_gpu_counter(self) -> None:
+        intent = fastpath.match("cpu usage")
+        assert intent is not None
+        assert intent.args == {}
+
+
+class TestAnswersTheQuestionAsked:
+    """Over-answering was a complaint in its own right.
+
+    "What's my battery percentage" got a four-part hardware report; the
+    formatter now returns the reading that was asked for.
+    """
+
+    STATUS: ClassVar[dict[str, object]] = {
+        "cpu_percent": 12.0,
+        "memory": {"total_gb": 16.0, "used_percent": 51.0},
+        "disk": {"total_gb": 500.0, "free_gb": 120.0, "used_percent": 76.0},
+        "battery": {"percent": 92, "plugged_in": True},
+        "gpu": {"percent": 6.1},
+    }
+
+    def test_battery_question_gets_only_the_battery(self) -> None:
+        intent = fastpath.Intent(name="status", formatter="status", subject="battery")
+        reply = fastpath.format_reply(intent, self.STATUS)
+        assert reply == "92%, plugged in."
+
+    def test_gpu_question_gets_only_the_gpu(self) -> None:
+        intent = fastpath.Intent(name="status", formatter="status", subject="gpu")
+        assert fastpath.format_reply(intent, self.STATUS) == "GPU is at 6.1%."
+
+    def test_missing_gpu_counter_is_admitted_not_invented(self) -> None:
+        intent = fastpath.Intent(name="status", formatter="status", subject="gpu")
+        reply = fastpath.format_reply(intent, {**self.STATUS, "gpu": None})
+        assert "didn't report" in reply
+
+    def test_general_status_still_reports_everything(self) -> None:
+        intent = fastpath.Intent(name="status", formatter="status", subject="system")
+        reply = fastpath.format_reply(intent, self.STATUS)
+        assert "CPU" in reply and "battery" in reply and "disk" in reply
+
+
+class TestWebShortcuts:
+    def test_site_names_open_the_site_not_a_missing_app(self) -> None:
+        """'open youtube' used to hunt for an installed program and fail."""
+        intent = fastpath.match("open youtube")
+        assert intent is not None
+        assert intent.tool == "apps.open_url"
+        assert intent.args["url"] == "https://www.youtube.com"
+
+    def test_google_query_becomes_a_search(self) -> None:
+        intent = fastpath.match("google best laptop 2026")
+        assert intent is not None
+        assert intent.args["url"] == "https://www.google.com/search?q=best+laptop+2026"
+
+    def test_play_on_youtube_searches_youtube(self) -> None:
+        intent = fastpath.match("play despacito on youtube")
+        assert intent is not None
+        assert "youtube.com/results?search_query=despacito" in intent.args["url"]
+
+    def test_bare_search_is_left_to_the_model(self) -> None:
+        """'search for X' could mean the filesystem, so do not guess."""
+        assert fastpath.match("search for invoices") is None
+
+    def test_installed_apps_still_win_over_site_names(self) -> None:
+        intent = fastpath.match("open chrome")
+        assert intent is not None
+        assert intent.tool == "apps.open"

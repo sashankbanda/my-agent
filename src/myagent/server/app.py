@@ -35,7 +35,7 @@ from myagent.logging import get_logger
 from myagent.scheduler_lite import nightly_snapshots
 from myagent.security.broker import PermissionBroker
 from myagent.security.confirm import ConfirmationService
-from myagent.server import chat, events_ws, memory, security, voice_ws
+from myagent.server import chat, control, events_ws, memory, security, voice_ws
 from myagent.tools.executor import ToolExecutor
 from myagent.tools.registry import load_builtin_tools
 
@@ -93,6 +93,9 @@ def create_app(
         broadcaster.bind_loop()  # live UI feed publishes onto this loop
         app_.state.voice_connected = False
         app_.state.voice_state = "offline"
+        app_.state.voice_muted = False
+        app_.state.voice_link = control.VoiceLink()
+        app_.state.turns = control.TurnRegistry()
         db_path = settings.db_path()
         with connection(db_path) as conn:
             applied = migrate(conn)
@@ -125,6 +128,7 @@ def create_app(
     app = FastAPI(title=settings.app.name, version=myagent.__version__, lifespan=lifespan)
     app.state.settings = settings
     app.include_router(chat.router)
+    app.include_router(control.router)
     app.include_router(memory.router)
     app.include_router(voice_ws.router)
     app.include_router(security.router)

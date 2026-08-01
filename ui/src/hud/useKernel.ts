@@ -29,6 +29,7 @@ export type Status = {
   voice: {
     connected: boolean;
     state: string;
+    muted: boolean;
     mode: string;
     wake_word: string;
     stt_engine: string;
@@ -143,6 +144,12 @@ export function describeEvent(event: KernelEvent): { text: string; kind: string 
       return { text: `backup uploaded (${data.size} bytes)`, kind: "vault" };
     case "TurnInterrupted":
       return { text: "you interrupted", kind: "warn" };
+    case "ToolNudge":
+      return { text: "explained instead of acting — retrying with tools", kind: "warn" };
+    case "UserStopped":
+      return { text: `you stopped it (${data.turns} in flight)`, kind: "warn" };
+    case "VoiceMuted":
+      return { text: data.muted ? "microphone muted" : "microphone live", kind: "ok" };
     case "BudgetExceeded":
       return { text: `step budget reached (${data.steps})`, kind: "warn" };
     case "KillSwitchEngaged":

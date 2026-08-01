@@ -11,8 +11,8 @@ import sqlite3
 import pytest
 
 from myagent.config import Settings
-from myagent.core import complexity
-from myagent.core.loop import AgentLoop
+from myagent.core import complexity, history
+from myagent.core.loop import LEAKED_CALL_REPLY, AgentLoop, build_system_prompt
 from myagent.gateway.gateway import Gateway
 from myagent.gateway.health import HealthTracker
 from myagent.gateway.privacy import filter_candidates
@@ -58,6 +58,12 @@ class TestComplexityRouting:
             ("plan my week around three deadlines", "needs reasoning"),
             ("def add(a, b): return a + b -- is this right?", "code"),
             ("open chrome and then check my email if it is after 9", "multi-step request"),
+            # Anything that wants a tool called: a 3B model answers these with
+            # instructions instead of calling the tool, which is the whole bug
+            # this routing exists to prevent.
+            ("close spotify", "wants an action taken"),
+            ("gpu usage percentage", "asks about this machine"),
+            ("my disk space", "asks about this machine"),
         ],
     )
     def test_hard_turns_go_to_the_cloud(self, text: str, expected_reason: str) -> None:
@@ -230,3 +236,200 @@ async def test_local_model_serves_a_secret_prompt(
         received += chunk.delta
     assert client.calls == ["ollama/small"], "a secret must only reach the local model"
     assert received.strip() == "Understood."
+
+
+class TestAnswerStyle:
+    """The prompt has to forbid the failure the user actually hit.
+
+    Asked for GPU usage, the assistant replied "I don't have direct access...
+    press Ctrl+Shift+Esc, go to the Performance tab" - a tutorial instead of a
+    tool call, three paragraphs long.
+    """
+
+    def test_base_prompt_forbids_explaining_instead_of_acting(self) -> None:
+        prompt = build_system_prompt()
+        assert "DO THE THING" in prompt
+        assert "BE SHORT" in prompt
+
+    def test_voice_replies_are_capped_harder(self) -> None:
+        """A spoken paragraph cannot be skimmed, so it must be shorter."""
+        spoken = build_system_prompt(channel="voice")
+        assert "SPOKEN ALOUD" in spoken
+        assert "30 words" in spoken
+        assert "SPOKEN ALOUD" not in build_system_prompt(channel="local")
+
+    def test_local_model_gets_its_own_brevity_cap(self) -> None:
+        assert "two short sentences" in build_system_prompt(local_model=True)
+        assert "two short sentences" not in build_system_prompt(local_model=False)
+
+
+class TestDeflectionEscalates:
+    """A local answer that tells the user to go do it themselves is a failure.
+
+    The cloud model has the same tools and calls them, so the turn is retried
+    there rather than shown.
+    """
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            "I don't have direct access to real-time GPU data.",
+            "I do not have access to that. You would need to check manually.",
+            "Open Task Manager and look at the Performance tab.",
+            "I don't see any direct tool available for checking GPU usage.",
+        ],
+    )
+    def test_deflections_are_retried_on_the_cloud(self, answer: str) -> None:
+        escalate, reason = complexity.should_escalate(answer)
+        assert escalate is True
+        assert reason == "local model explained instead of acting"
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            "It's 92%, plugged in.",
+            "Shakespeare wrote Hamlet.",
+            "CPU stands for central processing unit.",
+        ],
+    )
+    def test_good_answers_are_kept(self, answer: str) -> None:
+        assert complexity.should_escalate(answer)[0] is False
+
+
+class SequencedClient(FakeClient):
+    """Returns a *different* scripted reply per call.
+
+    FakeClient replays one script forever, which cannot express "the model
+    answered badly, then answered well after being corrected".
+    """
+
+    def __init__(self, replies: list[list[str]]) -> None:
+        super().__init__({})
+        self._replies = list(replies)
+
+    def stream(self, spec, messages, usage_out, max_tokens=None, tools=None, tool_calls_out=None):  # type: ignore[no-untyped-def]
+        deltas = self._replies.pop(0) if self._replies else [""]
+        self.scripts = {spec.key: deltas}
+        return super().stream(spec, messages, usage_out, max_tokens, tools, tool_calls_out)
+
+
+def build_sequenced(settings: Settings, replies: list[list[str]]) -> tuple[AgentLoop, FakeClient]:
+    """A loop whose model gives each scripted reply in turn."""
+    client = SequencedClient(replies)
+    gateway = Gateway(
+        registry=local_registry(),
+        quota=QuotaGovernor(settings.db_path()),
+        health=HealthTracker(settings.db_path()),
+        client=client,
+        db_path=settings.db_path(),
+    )
+    return AgentLoop(gateway, settings.db_path(), fast_path=False, local_tier=False), client
+
+
+class TestToolDeflectionGuard:
+    """An action request must never be answered with a how-to guide.
+
+    Escalating to the cloud is not enough on its own: when every free tier is
+    rate-limited the local model is the only one left, so the correction has
+    to work in place.
+    """
+
+    def test_action_requests_are_marked_as_needing_a_tool(self) -> None:
+        assert complexity.classify("close spotify").needs_tool is True
+        assert complexity.classify("how much disk space is left").needs_tool is True
+        assert complexity.classify("who wrote Hamlet").needs_tool is False
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            "I'm unable to directly check your disk space.",
+            "You can use File Explorer to see that.",
+            "Right-click the Start button and choose Properties.",
+            "Open Task Manager and look at the Performance tab.",
+        ],
+    )
+    def test_deflections_are_detected(self, answer: str) -> None:
+        assert complexity.looks_like_deflection(answer) is True
+
+    def test_real_answers_are_not_flagged(self) -> None:
+        assert complexity.looks_like_deflection("You have 352.3 GB free of 511 GB.") is False
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            'subur "{ "name": "apps.list_processes", "arguments": {"limit": null}} "',
+            '{"name": "apps.open", "arguments": {"target": "chrome"}}',
+            'Let me check: "function": "apps.system_status"',
+        ],
+    )
+    def test_written_out_tool_calls_are_detected(self, answer: str) -> None:
+        """A 3B sometimes writes the call as prose instead of making it."""
+        assert complexity.looks_like_tool_leak(answer) is True
+
+    def test_prose_is_not_mistaken_for_a_leak(self) -> None:
+        assert complexity.looks_like_tool_leak("Your name is on the account.") is False
+
+    async def test_deflection_is_corrected_in_place(
+        self, db: sqlite3.Connection, settings: Settings
+    ) -> None:
+        """First reply deflects, second one is kept - the user sees only the second."""
+        loop, client = build_sequenced(
+            settings,
+            [
+                ["I don't have direct access. Open Task Manager and look."],
+                ["You have 352 GB free."],
+            ],
+        )
+        session = loop.ensure_session(None)
+        answer = await drain(loop, session, "how much disk space is left")
+
+        assert answer.strip() == "You have 352 GB free."
+        assert client.calls == ["cloud/big", "cloud/big"], "the model was asked again"
+        types = [row["type"] for row in db.execute("SELECT type FROM events ORDER BY id")]
+        assert "ToolNudge" in types
+
+    async def test_leaked_tool_call_is_never_shown(
+        self, db: sqlite3.Connection, settings: Settings
+    ) -> None:
+        """If the correction fails too, say so - do not print raw JSON."""
+        leak = '{"name": "apps.list_processes", "arguments": {}}'
+        loop, _ = build_sequenced(settings, [[leak], [leak]])
+        session = loop.ensure_session(None)
+        answer = await drain(loop, session, "what is using the most memory")
+
+        assert answer.strip() == LEAKED_CALL_REPLY
+        assert "arguments" not in answer
+        stored = history.get_messages(settings.db_path(), session)[-1]
+        assert stored["content"] == LEAKED_CALL_REPLY, "garbage must not enter history"
+
+    async def test_plain_answers_are_untouched(
+        self, db: sqlite3.Connection, settings: Settings
+    ) -> None:
+        loop, client = build_sequenced(settings, [["You have 352 GB free."]])
+        session = loop.ensure_session(None)
+        answer = await drain(loop, session, "how much disk space is left")
+
+        assert answer.strip() == "You have 352 GB free."
+        assert client.calls == ["cloud/big"], "no needless second call"
+
+    async def test_a_how_to_guide_with_no_tool_call_is_replaced(
+        self, db: sqlite3.Connection, settings: Settings
+    ) -> None:
+        """Corrected once and still deflecting: say it failed, don't lecture."""
+        guide = "You can use File Explorer to check that yourself."
+        loop, _ = build_sequenced(settings, [[guide], [guide]])
+        session = loop.ensure_session(None)
+        answer = await drain(loop, session, "how much disk space is left")
+
+        assert answer.strip() == LEAKED_CALL_REPLY
+        assert "File Explorer" not in answer
+
+    async def test_conversation_answers_are_never_touched(
+        self, db: sqlite3.Connection, settings: Settings
+    ) -> None:
+        """The guard applies only to action requests, not to chat."""
+        loop, _ = build_sequenced(settings, [["You would need to read the play to find out."]])
+        session = loop.ensure_session(None)
+        answer = await drain(loop, session, "who wrote Hamlet")
+
+        assert answer.strip() == "You would need to read the play to find out."

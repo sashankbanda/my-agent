@@ -63,6 +63,32 @@ indefinitely. Talking over it interrupts it (best with a headset).
 
 Watch the orb to know whether it heard you.
 
+### Muting the mic (talking to someone else)
+
+| How | What it does |
+|---|---|
+| **Ctrl+Alt+M** — works in any window | Toggles the mic. Nothing is heard, transcribed, or uploaded while muted. |
+| **Mic on / Mic off** button in the HUD | Same toggle |
+| Right-click the orb → **Mute / unmute mic** | Same toggle |
+
+While muted the orb turns red and says "mic muted", and the HUD shows a
+**MIC MUTED** pill. Unmuting does *not* resume the old conversation — you say
+the wake word again, so a room conversation can't be picked up mid-sentence.
+
+Don't want to reach for a key? Say **"stop listening"** (or "go to sleep",
+"that's all"). It closes the window immediately without answering.
+
+### Stopping it mid-sentence
+
+| How | What it does |
+|---|---|
+| Just talk over it | Barge-in: it stops and listens (~0.35 s of speech) |
+| **Stop** button in the HUD | Cancels the answer being written *or* spoken |
+| Right-click the orb → **Stop talking** | Same |
+
+**Stop** is not the same as **Emergency**. Stop ends the current answer;
+Emergency (the kill switch) blocks every action until you re-enable it.
+
 ---
 
 ## When voice doesn't respond
@@ -132,8 +158,28 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.Co
 
 ### The assistant is doing something you want stopped NOW
 
-Click **Emergency stop** in the Activity panel (or `POST /kill`). It blocks
-every action immediately. Click **Re-enable actions** when you're ready.
+Click **Emergency** in the HUD header (or `POST /kill`). It blocks every
+action immediately. Click **Re-enable** when you're ready. To stop only the
+current answer, use **Stop** instead — see [Stopping it
+mid-sentence](#stopping-it-mid-sentence).
+
+### It explained how to do something instead of doing it
+
+That should not happen: requests that need a tool are routed to the model
+that calls tools reliably, and a reply that describes steps without calling
+anything is retried once and then replaced with an honest failure.
+
+If you see it anyway, check the activity feed for `429` errors — when all
+three free tiers are exhausted, the on-device 3B model is the only one left
+and it is measurably worse at using tools. It resets on the providers'
+schedule.
+
+### An app you opened closed when you stopped MyAgent
+
+Fixed — apps now break away from MyAgent's process group. If you see it
+again, check that the app was opened by the assistant rather than by a shell
+command (`shell.run` deliberately keeps its children attached, so a runaway
+command cannot outlive the kernel).
 
 ---
 
@@ -279,13 +325,19 @@ Handled for free:
 | "hi", "thanks", "ok" | canned reply |
 | "what time is it", "what's the date" | answered from the clock |
 | "open chrome", "open Premiere Pro" | launches the app |
-| "open youtube.com" | opens the browser |
+| "open my browser" | opens *your* default browser |
+| "open youtube", "open gmail", "open github" | opens the site |
+| "google best laptops 2026" | runs the search |
+| "play despacito on youtube" | searches YouTube |
 | "what's in my Downloads", "list Documents" | lists the folder |
-| "what's my battery", "check cpu", "disk space" | real system readings |
-| "what's running" | top processes |
+| "what's my battery", "how much disk space is left", "gpu usage" | real readings |
+| "what's running", "what's using the most memory" | top processes |
 | "what apps can you open" | installed apps |
 | "remember that ..." | stores a fact |
 | "what do you remember about me" | lists your facts |
+
+Answers are scoped to the question: "what's my battery" gets
+`92%, plugged in.` — not a four-part hardware report.
 
 Anything with reasoning, multiple steps, or conjunctions ("open chrome **and**
 search for X", "**why** is my battery draining") goes to the model as usual.

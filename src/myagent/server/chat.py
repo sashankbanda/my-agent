@@ -10,6 +10,7 @@ Wire protocol (both transports, one JSON payload shape per event):
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 
@@ -21,6 +22,7 @@ from myagent.core.history import get_messages, list_sessions, session_exists
 from myagent.core.loop import AgentLoop
 from myagent.gateway.types import GatewayError
 from myagent.logging import get_logger
+from myagent.server.control import TurnRegistry
 
 log = get_logger(__name__)
 
@@ -34,18 +36,29 @@ class ChatBody(BaseModel):
     session_id: str | None = None
 
 
-async def _turn_events(loop: AgentLoop, session_id: str, message: str) -> AsyncIterator[str]:
+async def _turn_events(
+    loop: AgentLoop,
+    session_id: str,
+    message: str,
+    registry: TurnRegistry | None = None,
+) -> AsyncIterator[str]:
     """Run one turn and yield wire-protocol payloads as JSON strings.
 
     ``done`` is emitted exactly once, when the whole turn ends. The loop's
     per-step ``done`` chunks are internal boundaries between tool steps -
     forwarding them would tell the UI the answer is finished while the
     assistant is still working.
+
+    The turn registers a cancellation handle so ``POST /stop`` can end a typed
+    answer mid-stream, exactly as barge-in ends a spoken one.
     """
     yield json.dumps({"session_id": session_id})
     model: str | None = None
+    cancel = asyncio.Event()
+    if registry is not None:
+        registry.register(cancel)
     try:
-        async for chunk in loop.respond(session_id, message):
+        async for chunk in loop.respond(session_id, message, cancel=cancel):
             if chunk.reset:
                 yield json.dumps({"reset": True})
             if chunk.delta:
@@ -56,17 +69,21 @@ async def _turn_events(loop: AgentLoop, session_id: str, message: str) -> AsyncI
         log.warning("turn_failed", session=session_id, error=str(exc))
         yield json.dumps({"error": str(exc)})
         return
-    yield json.dumps({"done": True, "model": model})
+    finally:
+        if registry is not None:
+            registry.discard(cancel)
+    yield json.dumps({"done": True, "model": model, "stopped": cancel.is_set()})
 
 
 @router.post("/chat")
 async def chat(body: ChatBody, request: Request) -> StreamingResponse:
     """Stream one conversation turn as Server-Sent Events."""
     loop: AgentLoop = request.app.state.loop
+    registry: TurnRegistry = request.app.state.turns
     session_id = loop.ensure_session(body.session_id)
 
     async def sse() -> AsyncIterator[str]:
-        async for payload in _turn_events(loop, session_id, body.message):
+        async for payload in _turn_events(loop, session_id, body.message, registry):
             yield f"data: {payload}\n\n"
 
     return StreamingResponse(sse(), media_type="text/event-stream")
@@ -92,6 +109,7 @@ async def session_messages(session_id: str, request: Request) -> list[dict[str, 
 async def chat_ws(websocket: WebSocket) -> None:
     """Persistent chat connection: one JSON request in, streamed events out."""
     loop: AgentLoop = websocket.app.state.loop
+    registry: TurnRegistry = websocket.app.state.turns
     await websocket.accept()
     try:
         while True:
@@ -102,7 +120,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                 await websocket.send_text(json.dumps({"error": "invalid request"}))
                 continue
             session_id = loop.ensure_session(body.session_id)
-            async for payload in _turn_events(loop, session_id, body.message):
+            async for payload in _turn_events(loop, session_id, body.message, registry):
                 await websocket.send_text(payload)
     except WebSocketDisconnect:
         return

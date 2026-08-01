@@ -44,10 +44,13 @@ class EventType(StrEnum):
     VOICE_DISCONNECTED = "VoiceDisconnected"
     USER_SAID = "UserSaid"
     ASSISTANT_SAID = "AssistantSaid"
+    USER_STOPPED = "UserStopped"  # "stop talking": turn cancelled, speech flushed
+    VOICE_MUTED = "VoiceMuted"  # microphone gated at the satellite
 
     # M4 - tools and permissions
     FAST_PATH_HANDLED = "FastPathHandled"  # answered locally, zero tokens
     ESCALATED_TO_CLOUD = "EscalatedToCloud"  # local model's answer was not good enough
+    TOOL_NUDGE = "ToolNudge"  # model explained instead of acting; corrected in place
     TOOL_CALL_REQUESTED = "ToolCallRequested"
     TOOL_CALL_COMPLETED = "ToolCallCompleted"
     PERMISSION_DECIDED = "PermissionDecided"

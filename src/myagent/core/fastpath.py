@@ -28,6 +28,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote_plus
 
 GREETINGS = {
     "hi",
@@ -78,6 +79,37 @@ COMPLEXITY_MARKERS = (
 )
 MAX_FASTPATH_CHARS = 120
 
+# Sites people ask for by bare name. Without this, "open youtube" looked for
+# an installed program called youtube, failed, and fell through to the model -
+# which is a slow, token-costing way to reach the obvious answer.
+SITES = {
+    "youtube": "https://www.youtube.com",
+    "google": "https://www.google.com",
+    "gmail": "https://mail.google.com",
+    "google drive": "https://drive.google.com",
+    "drive": "https://drive.google.com",
+    "maps": "https://maps.google.com",
+    "google maps": "https://maps.google.com",
+    "github": "https://github.com",
+    "chatgpt": "https://chat.openai.com",
+    "claude": "https://claude.ai",
+    "gemini": "https://gemini.google.com",
+    "whatsapp": "https://web.whatsapp.com",
+    "netflix": "https://www.netflix.com",
+    "prime video": "https://www.primevideo.com",
+    "hotstar": "https://www.hotstar.com",
+    "linkedin": "https://www.linkedin.com",
+    "instagram": "https://www.instagram.com",
+    "reddit": "https://www.reddit.com",
+    "twitter": "https://twitter.com",
+    "x": "https://x.com",
+    "amazon": "https://www.amazon.in",
+    "flipkart": "https://www.flipkart.com",
+    "stackoverflow": "https://stackoverflow.com",
+    "stack overflow": "https://stackoverflow.com",
+    "wikipedia": "https://www.wikipedia.org",
+}
+
 
 @dataclass
 class Intent:
@@ -88,6 +120,7 @@ class Intent:
     args: dict[str, Any] = field(default_factory=dict)
     reply: str = ""  # used when tool is None
     formatter: str = ""  # key into FORMATTERS for tool results
+    subject: str = ""  # what was actually asked about, so the reply answers *that*
 
 
 def _looks_like_url(target: str) -> bool:
@@ -104,6 +137,12 @@ def _too_complex(text: str) -> bool:
     return len(text) > MAX_FASTPATH_CHARS or any(marker in padded for marker in COMPLEXITY_MARKERS)
 
 
+# Speech-to-text drops apostrophes and sometimes emits the curly U+2019 one,
+# so every contraction here tolerates all three spellings of "what's".
+# Missing this is why spoken questions fell through to the model.
+_APOS = "['\N{RIGHT SINGLE QUOTATION MARK}]"
+_WHATS = rf"(?:what(?:{_APOS}?s| is)|hows|how(?:{_APOS}s| is))"
+
 # Each entry: compiled pattern -> builder(match) -> Intent
 _OPEN = re.compile(
     r"^(?:please\s+)?(?:can you\s+)?(?:open|launch|start|run)\s+(?:up\s+)?"
@@ -111,21 +150,27 @@ _OPEN = re.compile(
     re.IGNORECASE,
 )
 _LIST_DIR = re.compile(
-    r"^(?:please\s+)?(?:what(?:'s| is)\s+in|list|show(?:\s+me)?|what(?:'s| is)\s+inside)\s+"
+    rf"^(?:please\s+)?(?:{_WHATS}\s+in|list|show(?:\s+me)?|{_WHATS}\s+inside)\s+"
     r"(?:my\s+|the\s+)?(.+?)\s*(?:folder|directory)?[.?!]?$",
     re.IGNORECASE,
 )
 _STATUS = re.compile(
-    r"^(?:please\s+)?(?:what(?:'s| is)\s+(?:my\s+)?|check\s+(?:my\s+)?"
-    r"|how(?:'s| is)\s+(?:my\s+)?|show\s+(?:me\s+)?(?:my\s+)?)?"
-    r"(battery|cpu|memory|ram|disk|storage|system)\s*"
-    r"(?:status|usage|level|percentage|percent|space|left)?[.?!]?$",
+    rf"^(?:please\s+)?(?:how\s+much\s+|how\s+many\s+|{_WHATS}\s+)?(?:my\s+|the\s+)?"
+    r"(?:current\s+)?(?:check\s+)?(?:my\s+|the\s+)?"
+    r"(battery|cpu|gpu|memory|ram|disk|storage|system)\s*"
+    # Any run of measurement words: "gpu usage percentage", "disk space left".
+    # Measurement words plus the filler that surrounds them in speech, so
+    # "disk space is left" and "memory do i have" both land here.
+    r"(?:(?:status|usage|level|percentage|percent|space|left|load|utilization|"
+    r"utilisation|remaining|free|available|at|is|are|do|i|have|has|got|there)\s*)*[.?!]?$",
     re.IGNORECASE,
 )
 _PROCESSES = re.compile(
-    r"^(?:what(?:'s| is)\s+running|list\s+processes|show\s+processes|"
-    r"what(?:'s| is)\s+(?:using|eating)\s+(?:my\s+)?(?:cpu|memory|ram)"
-    r"(?:\s+the\s+most)?)[.?!]?$",
+    rf"^(?:{_WHATS}\s+running|list\s+processes|show\s+processes|"
+    # "what is using the most memory right now", "which app is eating my cpu"
+    rf"(?:{_WHATS}|which\s+(?:app|program|process))\s+(?:is\s+)?(?:using|eating|taking)"
+    r"\s+(?:up\s+)?(?:the\s+most\s+|most\s+)?(?:my\s+)?(?:cpu|memory|ram)"
+    r"(?:\s+the\s+most)?(?:\s+right\s+now)?)[.?!]?$",
     re.IGNORECASE,
 )
 _APPS = re.compile(
@@ -138,14 +183,25 @@ _REMEMBER = re.compile(
 )
 _WHAT_REMEMBERED = re.compile(
     r"^(?:what\s+do\s+you\s+(?:remember|know)\s+about\s+me|"
-    r"list\s+(?:my\s+)?(?:facts|memories)|what(?:'s| is)\s+in\s+your\s+memory)[.?!]?$",
+    rf"list\s+(?:my\s+)?(?:facts|memories)|{_WHATS}\s+in\s+your\s+memory)[.?!]?$",
     re.IGNORECASE,
 )
-_TIME = re.compile(
-    r"^(?:what(?:'s| is)\s+the\s+time|what\s+time\s+is\s+it|time)[.?!]?$", re.IGNORECASE
+# Only unambiguous web searches: a bare "search for X" could mean the
+# filesystem, so it is left to the model.
+_WEB_SEARCH = re.compile(
+    r"^(?:please\s+)?(?:can you\s+)?(?:google|search\s+(?:the\s+web|google|online)\s+for)"
+    r"\s+(.+?)[.?!]?$",
+    re.IGNORECASE,
 )
+_YOUTUBE_SEARCH = re.compile(
+    r"^(?:please\s+)?(?:can you\s+)?(?:search\s+youtube\s+for|play|find)"
+    r"\s+(.+?)\s+on\s+youtube[.?!]?$",
+    re.IGNORECASE,
+)
+_TIME = re.compile(rf"^(?:{_WHATS}\s+the\s+time|what\s+time\s+is\s+it|time)[.?!]?$", re.IGNORECASE)
 _DATE = re.compile(
-    r"^(?:what(?:'s| is)\s+(?:the\s+)?(?:date|day)(?:\s+today)?|what\s+day\s+is\s+it)[.?!]?$",
+    rf"^(?:{_WHATS}\s+(?:the\s+)?(?:date|day)(?:\s+today)?|what\s+day\s+is\s+it|"
+    rf"what\s+is\s+today(?:{_APOS}s)?(?:\s+date)?)[.?!]?$",
     re.IGNORECASE,
 )
 
@@ -187,11 +243,13 @@ def match(text: str) -> Intent | None:
     if _PROCESSES.match(stripped):
         return Intent(name="processes", tool="apps.list_processes", formatter="processes")
     if found := _STATUS.match(stripped):
+        subject = found.group(1).lower()
         return Intent(
             name="status",
             tool="apps.system_status",
             formatter="status",
-            args={},
+            args={"include_gpu": True} if subject == "gpu" else {},
+            subject=subject,
         )
     if found := _LIST_DIR.match(stripped):
         target = found.group(1).strip().strip("\"'")
@@ -202,10 +260,33 @@ def match(text: str) -> Intent | None:
                 args={"path": target},
                 formatter="list_dir",
             )
+    if found := _YOUTUBE_SEARCH.match(stripped):
+        query = found.group(1).strip()
+        if query:
+            return Intent(
+                name="youtube_search",
+                tool="apps.open_url",
+                args={"url": f"https://www.youtube.com/results?search_query={quote_plus(query)}"},
+                formatter="open_url",
+            )
+    if found := _WEB_SEARCH.match(stripped):
+        query = found.group(1).strip()
+        if query:
+            return Intent(
+                name="web_search",
+                tool="apps.open_url",
+                args={"url": f"https://www.google.com/search?q={quote_plus(query)}"},
+                formatter="open_url",
+            )
     if found := _OPEN.match(stripped):
         target = found.group(1).strip().strip("\"'")
         if not target:
             return None
+        site = SITES.get(target.lower().removesuffix(" website").removesuffix(" web"))
+        if site is not None:
+            return Intent(
+                name="open_site", tool="apps.open_url", args={"url": site}, formatter="open_url"
+            )
         if _looks_like_url(target):
             return Intent(
                 name="open_url",
@@ -245,15 +326,42 @@ def _format_list_dir(result: dict[str, Any], intent: Intent) -> str:
     return f"{' and '.join(parts)}: {shown}{more}."
 
 
-def _format_status(result: dict[str, Any], _intent: Intent) -> str:
+def _format_status(result: dict[str, Any], intent: Intent) -> str:
+    """Answer the question that was asked, not every reading available.
+
+    "What's my battery?" wants a percentage, not a four-part hardware report -
+    dumping everything is the same over-answering that makes an assistant
+    tiring to talk to.
+    """
     memory = result.get("memory", {})
     disk = result.get("disk", {})
     battery = result.get("battery")
+    gpu = result.get("gpu")
+
+    subject = intent.subject
+    if subject == "battery":
+        if not battery:
+            return "This machine has no battery (or Windows isn't reporting one)."
+        state = "plugged in" if battery.get("plugged_in") else "on battery"
+        return f"{battery.get('percent')}%, {state}."
+    if subject == "cpu":
+        return f"CPU is at {result.get('cpu_percent')}%."
+    if subject == "gpu":
+        if not gpu:
+            return "Windows didn't report a GPU utilization counter on this machine."
+        return f"GPU is at {gpu.get('percent')}%."
+    if subject in ("memory", "ram"):
+        return f"Memory is {memory.get('used_percent')}% used of {memory.get('total_gb')} GB."
+    if subject in ("disk", "storage"):
+        return f"{disk.get('free_gb')} GB free of {disk.get('total_gb')} GB."
+
     pieces = [
         f"CPU {result.get('cpu_percent')}%",
         f"memory {memory.get('used_percent')}% of {memory.get('total_gb')} GB",
         f"disk {disk.get('free_gb')} GB free of {disk.get('total_gb')} GB",
     ]
+    if gpu:
+        pieces.append(f"GPU {gpu.get('percent')}%")
     if battery:
         plugged = "plugged in" if battery.get("plugged_in") else "on battery"
         pieces.append(f"battery {battery.get('percent')}% ({plugged})")

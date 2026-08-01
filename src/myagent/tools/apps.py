@@ -25,6 +25,67 @@ from myagent.tools.registry import ToolContext, ToolError, tool
 MAX_PROCESSES = 60
 
 
+# Windows process-creation flags (subprocess re-exports only some of these).
+DETACHED_PROCESS = 0x00000008
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+
+
+def _launch(target: str, direct: bool) -> None:
+    """Start something so that it OUTLIVES MyAgent.
+
+    The launcher puts every MyAgent process in a Windows job object with
+    KILL_ON_JOB_CLOSE, and a job member's children join that job - so an app
+    opened for the user was killed the moment MyAgent stopped. Neither
+    ``subprocess.Popen`` nor ``os.startfile`` escapes on its own (both create
+    the process from *this* process; measured, both died with the job).
+
+    Two ways out, one per kind of target:
+
+    - ``direct``: an executable we resolved to a real path. Launch it with
+      CREATE_BREAKAWAY_FROM_JOB, which the job explicitly permits, so failures
+      still surface as an exception we can report honestly.
+    - otherwise: shortcuts, folders, files, and protocol URIs need the shell's
+      association logic. Handing them to ``explorer.exe`` makes the *already
+      running* Explorer do the launching, so the app is its child, not ours.
+      The stub we spawn exits immediately.
+    """
+    argv = [target] if direct else ["explorer.exe", target]
+    flags = CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP
+    if direct:
+        flags |= DETACHED_PROCESS  # no console window inherited from us
+    try:
+        _spawn(argv, flags)
+    except OSError as exc:
+        raise ToolError(f"Windows refused to open {target}: {exc}") from exc
+
+
+def _spawn(argv: list[str], flags: int) -> None:
+    """Create the process, retrying without breakaway if it is not allowed.
+
+    A job that forbids breakaway rejects the flag outright (ERROR_ACCESS_DENIED).
+    Running inside one is better than not launching at all, so fall back.
+    """
+    try:
+        subprocess.Popen(
+            argv,
+            creationflags=flags,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except OSError:
+        subprocess.Popen(
+            argv,
+            creationflags=flags & ~CREATE_BREAKAWAY_FROM_JOB,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+
+
 @tool(
     name="apps.open",
     tier=Tier.REVERSIBLE,
@@ -57,16 +118,7 @@ def open_target(context: ToolContext, target: str) -> dict[str, Any]:
     found = find_application(target)
     if found is not None:
         kind, resolved = found
-        if kind == "exe":
-            # Resolved absolute path, argv form, no shell: nothing to inject.
-            subprocess.Popen(
-                [resolved],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        else:  # shortcut or protocol URI: the shell knows how to start these
-            os.startfile(resolved)
+        _launch(resolved, direct=kind == "exe")
         return {"opened": resolved, "kind": "application"}
 
     try:
@@ -77,7 +129,7 @@ def open_target(context: ToolContext, target: str) -> dict[str, Any]:
             f"could not find an application called '{target}', and it is not an "
             f"openable path either ({exc}). Installed apps include: {known}"
         ) from exc
-    os.startfile(path)  # Windows file association (same as double-clicking)
+    _launch(str(path), direct=False)  # folders and documents need associations
     return {"opened": str(path), "kind": "folder" if path.is_dir() else "file"}
 
 
@@ -157,19 +209,76 @@ def list_processes(context: ToolContext, limit: int = 15) -> dict[str, Any]:
     return {"count": min(count, len(entries)), "processes": entries[:count]}
 
 
+GPU_COUNTER_TIMEOUT_S = 12
+
+
+def gpu_usage() -> dict[str, Any] | None:
+    """Current GPU load, or None when this machine cannot report it.
+
+    psutil has no GPU support, so this reads Windows' own performance
+    counters - the same numbers Task Manager shows. Utilization is split
+    across many per-engine instances (3D, Copy, VideoDecode...), and the
+    meaningful figure is their sum, capped at 100%.
+
+    Deliberately not nvidia-smi: that only works on NVIDIA hardware, while
+    the counter exists for every GPU including integrated ones.
+    """
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "$s=(Get-Counter '\\GPU Engine(*)\\Utilization Percentage').CounterSamples"
+        "|Measure-Object -Property CookedValue -Sum;"
+        "[math]::Round([math]::Min($s.Sum,100),1)"
+    )
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=GPU_COUNTER_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        percent = float(completed.stdout.strip())
+    except ValueError:
+        return None
+    return {"percent": percent}
+
+
 @tool(
     name="apps.system_status",
     tier=Tier.READ,
-    description="Report CPU, memory, disk, and battery status for this machine.",
+    description=(
+        "Report CPU, memory, disk, battery - and, with include_gpu, GPU load - "
+        "for this machine. This is the tool for any question about how loaded "
+        "or how full this computer is: answer from it rather than telling the "
+        "user to open Task Manager."
+    ),
+    params={
+        "include_gpu": {
+            "type": "boolean",
+            "description": (
+                "Also read GPU utilization (adds ~2s; pass true when asked about the GPU)"
+            ),
+        }
+    },
 )
-def system_status(context: ToolContext) -> dict[str, Any]:
-    """Hardware snapshot (FR-DESK-06)."""
+def system_status(context: ToolContext, include_gpu: bool = False) -> dict[str, Any]:
+    """Hardware snapshot (FR-DESK-06).
+
+    GPU is opt-in because its counter costs ~2s while everything else here is
+    instant, and most status questions are not about the GPU.
+    """
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(os.environ.get("SYSTEMDRIVE", "C:") + "\\")
     battery = psutil.sensors_battery()
     return {
         "cpu_percent": psutil.cpu_percent(interval=0.3),
         "cpu_count": psutil.cpu_count(logical=True),
+        "gpu": gpu_usage() if include_gpu else None,
         "memory": {
             "total_gb": round(memory.total / 1e9, 1),
             "used_percent": memory.percent,

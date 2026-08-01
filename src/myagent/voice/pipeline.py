@@ -27,6 +27,11 @@ Echo handling (no AEC yet): the mic hears the assistant through open
 speakers, so while playback is active the audio feeds ONLY the barge-in
 detector - never the segmenter. Otherwise the assistant transcribes itself and
 answers its own words. A short cooldown after playback absorbs the tail.
+
+Mute lives HERE rather than on the kernel: a muted microphone must stop audio
+before wake detection, so nothing said to a person in the room is transcribed
+or uploaded. The global hotkey (MUTE_HOTKEY) works from any window, because
+the moment you need it you are not looking at the HUD.
 """
 
 from __future__ import annotations
@@ -55,11 +60,25 @@ from myagent.voice.wake import WAKE_CHUNK_SAMPLES, WakeDetector
 
 log = get_logger(__name__)
 
-BARGE_IN_MS = 500  # sustained speech needed to interrupt playback (echo guard)
+BARGE_IN_MS = 350  # sustained speech needed to interrupt playback (echo guard)
 ECHO_COOLDOWN_S = 0.4  # ignore the mic briefly after playback (speaker tail)
 RECONNECT_DELAY_S = 3.0
 DEAD_INPUT_TRIP_S = 6.0  # this much digital silence -> re-probe input devices
 IDLE_RESYNC_S = 30.0  # while idle, re-open streams so they follow device switches
+MUTE_HOTKEY = "ctrl+alt+m"
+
+# Spoken "that's enough" - closes the follow-up window so the next thing you
+# say to somebody else in the room is not treated as a request. Cheaper and
+# more predictable than trying to guess who speech was aimed at.
+SLEEP_PHRASES = (
+    "stop listening",
+    "go to sleep",
+    "sleep now",
+    "that's all",
+    "thats all",
+    "nothing else",
+    "stop it",
+)
 
 
 class Pipeline:
@@ -88,8 +107,12 @@ class Pipeline:
         self._barge_needed = max(1, int(BARGE_IN_MS * SAMPLE_RATE / 1000 / FRAME_SAMPLES))
         self._ptt_down = False
         self._reported_listening = False  # debounce for "listening" state events
+        self._muted = False
+        self._mute_changed = asyncio.Event()  # hotkey -> tell the kernel
+        self._loop: asyncio.AbstractEventLoop | None = None  # set once running
         if settings.mode == "ptt":
             self._install_ptt_hook()
+        self._install_mute_hotkey()
 
     # -- audio device lifecycle ---------------------------------------------
 
@@ -172,6 +195,65 @@ class Pipeline:
     def _set_ptt(self, down: bool) -> None:
         self._ptt_down = down
 
+    # -- mute ---------------------------------------------------------------
+
+    def _install_mute_hotkey(self) -> None:
+        """Bind the global mute key, tolerating environments without one.
+
+        The hook needs an OS keyboard driver; in a test or headless run there
+        is none, and failing to bind a convenience key must never stop the
+        voice satellite from starting.
+        """
+        try:
+            import keyboard
+
+            keyboard.add_hotkey(MUTE_HOTKEY, self.toggle_mute)
+        except Exception as exc:
+            log.warning("mute_hotkey_unavailable", key=MUTE_HOTKEY, error=str(exc))
+            return
+        log.info("mute_hotkey_ready", key=MUTE_HOTKEY)
+
+    @property
+    def muted(self) -> bool:
+        """True while the microphone is gated."""
+        return self._muted
+
+    def set_muted(self, muted: bool) -> None:
+        """Gate or ungate the microphone.
+
+        Muting also drops the attention window and any speech in progress, so
+        unmuting starts clean rather than resuming a half-heard sentence.
+        """
+        if muted == self._muted:
+            return
+        self._muted = muted
+        if muted:
+            self._attend_until = 0.0
+            self.segmenter.reset()
+            self.vad.reset()
+            self._wake_buffer = np.zeros(0, dtype=np.float32)
+            self._reported_listening = False
+        log.info("mute", muted=muted)
+
+    def toggle_mute(self) -> None:
+        """Flip mute from the global hotkey.
+
+        This runs on the ``keyboard`` library's own thread, so the asyncio
+        Event must be set through the loop rather than directly - waking a
+        waiter from a foreign thread is not thread-safe.
+        """
+        self.set_muted(not self._muted)
+        loop = self._loop
+        if loop is None:
+            self._mute_changed.set()
+        else:
+            loop.call_soon_threadsafe(self._mute_changed.set)
+
+    def _sleep_requested(self, text: str) -> bool:
+        """True when the user told the assistant to stop paying attention."""
+        cleaned = text.strip().lower().rstrip(".!?")
+        return cleaned in SLEEP_PHRASES
+
     # -- the three tasks ----------------------------------------------------
 
     async def listen(self, socket: websockets.ClientConnection) -> None:
@@ -182,8 +264,20 @@ class Pipeline:
         current devices (Bluetooth/wired switches after startup).
         """
         watchdog = DeadAudioWatchdog(DEAD_INPUT_TRIP_S)
+        muted_reported = False
         while True:
             frame = await asyncio.to_thread(self.mic.get, 1.0)
+
+            if self._muted:
+                # Drop the frame before wake detection: muted means nothing
+                # said in this room is examined, transcribed, or uploaded.
+                if not muted_reported:
+                    muted_reported = True
+                    await self._report_state(socket, "muted")
+                continue
+            if muted_reported:
+                muted_reported = False
+                await self._report_state(socket, "waiting")
 
             if watchdog.feed(None if frame is None else float(np.abs(frame).max())):
                 await self._rebuild_audio("input went silent", probe=True)
@@ -210,16 +304,11 @@ class Pipeline:
                     self._barge_run_frames = 0
                 if self._barge_run_frames >= self._barge_needed:
                     log.info("barge_in")
-                    self.speaker.flush()
-                    self._drain_sentences()
-                    await socket.send(json.dumps({"type": "cancel"}))
-                    self._barge_run_frames = 0
-                    self._turn_active = False
                     # Start listening cleanly: the user is mid-sentence, and
                     # everything captured so far is echo.
-                    self._quiet_until = time.monotonic() + ECHO_COOLDOWN_S
-                    self.segmenter.reset()
-                    self.vad.reset()
+                    self.stop_speaking()
+                    await socket.send(json.dumps({"type": "cancel"}))
+                    self._barge_run_frames = 0
                 continue
 
             # Speaker tail after playback: still echo, not the user.
@@ -243,6 +332,18 @@ class Pipeline:
             if not text:
                 continue
             log.info("utterance", text=text, seconds=round(utterance.duration_s, 2))
+
+            if self._sleep_requested(text):
+                # Close attention without answering: the wake word is needed
+                # again, so talking to someone else is no longer captured.
+                log.info("sleep_requested", text=text)
+                self._attend_until = 0.0
+                self._turn_active = False
+                self.segmenter.reset()
+                self.vad.reset()
+                await self._report_state(socket, "idle")
+                continue
+
             self._turn_active = True
             await socket.send(json.dumps({"type": "utterance", "text": text}))
 
@@ -271,6 +372,14 @@ class Pipeline:
                 # playback_watcher), so do not start it here.
                 self._turn_active = False
                 self._refresh_attention()
+            elif kind == "stop":
+                # "Stop talking": drop queued speech and cut playback now.
+                self.stop_speaking()
+                await self._report_state(socket, "waiting")
+            elif kind == "set_mute" and isinstance(frame.get("value"), bool):
+                self.set_muted(frame["value"])
+                if frame["value"]:
+                    self.stop_speaking()
             elif kind == "error":
                 log.warning("kernel_error", message=frame.get("message"))
                 self._turn_active = False
@@ -312,11 +421,36 @@ class Pipeline:
             with contextlib.suppress(asyncio.QueueEmpty):
                 self._sentences.get_nowait()
 
+    def stop_speaking(self) -> None:
+        """Go quiet immediately.
+
+        Both halves are needed: flushing the speaker kills the audio already
+        buffered, and draining the queue stops the next sentence from being
+        synthesized right behind it.
+        """
+        self.speaker.flush()
+        self._drain_sentences()
+        self._turn_active = False
+        self._quiet_until = time.monotonic() + ECHO_COOLDOWN_S
+        self.segmenter.reset()
+        self.vad.reset()
+
+    async def mute_reporter(self, socket: websockets.ClientConnection) -> None:
+        """Tell the kernel when the hotkey changed mute, so the UIs follow."""
+        while True:
+            await self._mute_changed.wait()
+            self._mute_changed.clear()
+            if self._muted:
+                self.stop_speaking()
+            with contextlib.suppress(websockets.WebSocketException):
+                await socket.send(json.dumps({"type": "mute", "value": self._muted}))
+
     # -- lifecycle -----------------------------------------------------------
 
     async def run(self) -> None:
         """Run forever, reconnecting to the kernel when it restarts."""
-        log.info("voice_ready", mode=self.settings.mode)
+        self._loop = asyncio.get_running_loop()  # the hotkey thread posts here
+        log.info("voice_ready", mode=self.settings.mode, mute_hotkey=MUTE_HOTKEY)
         try:
             while True:
                 try:
@@ -327,6 +461,7 @@ class Pipeline:
                             asyncio.create_task(self.receive(socket)),
                             asyncio.create_task(self.speak(socket)),
                             asyncio.create_task(self.playback_watcher(socket)),
+                            asyncio.create_task(self.mute_reporter(socket)),
                         ]
                         done, pending = await asyncio.wait(
                             tasks, return_when=asyncio.FIRST_EXCEPTION

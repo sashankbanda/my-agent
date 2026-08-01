@@ -145,6 +145,7 @@ async def status(request: Request) -> dict[str, Any]:
         "voice": {
             "connected": bool(getattr(request.app.state, "voice_connected", False)),
             "state": getattr(request.app.state, "voice_state", "idle"),
+            "muted": bool(getattr(request.app.state, "voice_muted", False)),
             "mode": voice_settings.mode,
             "wake_word": voice_settings.wake.model,
             "stt_engine": voice_settings.stt.engine,

@@ -10,9 +10,13 @@ call a model is both slow and circular. It scores cheap, legible signals:
 
 - length and clause structure (long, comma-heavy input tends to be complex)
 - explicit reasoning verbs ("why", "compare", "plan", "debug", "refactor")
+- **action intent** - anything that wants something *done* on this machine, or
+  asks about this machine's hardware, needs a tool call, and tool calling is
+  where small models fail worst: they answer "you could open Task Manager and
+  look" instead of just looking
 - domain markers that small models handle badly (code, maths, legal, medical)
 - conversation state (an in-flight tool chain stays with the model that started
-  it, because tool-calling is where small models are weakest)
+  it, for the same tool-calling reason)
 
 Bias: **when in doubt, escalate.** A slow correct answer beats a fast wrong
 one, and the local tier is an optimization, never a downgrade the user did not
@@ -74,6 +78,70 @@ HARD_MARKERS = (
 # Multi-step or conditional phrasing: the model needs to plan.
 STRUCTURE_MARKERS = (" and then ", " after that ", " if ", " unless ", " otherwise ", " but only ")
 
+# Requests that want something DONE on this machine. The fast path already
+# handles the phrasings it recognizes for free; anything that reaches here
+# needs a tool call, and tool calling is exactly where a 3B model fails - it
+# answers "you could open Task Manager and look" instead of calling the tool.
+# Those turns go to the cloud, which calls tools reliably.
+ACTION_MARKERS = (
+    " open ",
+    " launch ",
+    " start ",
+    " close ",
+    " quit ",
+    " kill ",
+    " play ",
+    " pause ",
+    " delete ",
+    " remove ",
+    " move ",
+    " rename ",
+    " copy ",
+    " create ",
+    " make a ",
+    " download ",
+    " install ",
+    " check ",
+    " show ",
+    " list ",
+    " find ",
+    " search ",
+    " look up ",
+    " google ",
+    " send ",
+    " remind ",
+    " set ",
+    " turn on ",
+    " turn off ",
+    " volume ",
+    " screenshot ",
+    " my pc ",
+    " my laptop ",
+    " my computer ",
+)
+
+# Hardware and OS nouns. On their own these prove nothing - "what does CPU
+# stand for" is general knowledge, not a question about this laptop. What makes
+# it a tool question is either a possessive ("my cpu", "this disk") or a
+# measurement word attached to it ("gpu usage", "disk space free").
+_MACHINE_NOUN = (
+    r"cpu|gpu|ram|memory|disk|storage|battery|wifi|wi-fi|network|bluetooth|"
+    r"folder|directory|files?|apps?|process(?:es)?|window|browser|"
+    r"downloads|desktop|documents"
+)
+_OWNED_MACHINE = re.compile(rf"\b(?:my|this|the)\s+(?:\w+\s+)?(?:{_MACHINE_NOUN})\b", re.I)
+_MEASURED_MACHINE = re.compile(
+    rf"\b(?:{_MACHINE_NOUN})\b\s*(?:usage|status|level|percent|percentage|load|space|"
+    r"free|left|remaining|temperature|temp|running|open)",
+    re.I,
+)
+
+
+def asks_about_this_machine(text: str) -> bool:
+    """True when a hardware/OS noun refers to *this* computer, not the concept."""
+    return bool(_OWNED_MACHINE.search(text) or _MEASURED_MACHINE.search(text))
+
+
 CODE_PATTERN = re.compile(r"[{}<>]|\b(def|class|import|SELECT|function|const|var)\b")
 MATH_PATTERN = re.compile(r"\d+\s*[-+*/^]\s*\d+|\b(integral|derivative|equation|matrix)\b", re.I)
 
@@ -87,6 +155,7 @@ class Routing:
 
     use_local: bool
     reason: str
+    needs_tool: bool = False  # the turn cannot be answered without acting
 
 
 def classify(text: str, has_tool_history: bool = False, history_depth: int = 0) -> Routing:
@@ -98,10 +167,16 @@ def classify(text: str, has_tool_history: bool = False, history_depth: int = 0) 
         return Routing(False, "continuing a tool sequence")
     if len(stripped) > SHORT_TURN_CHARS:
         return Routing(False, "long request")
+    # Reasoning and structure are checked first: "why is my laptop slow" is a
+    # question to think about, even though it mentions this machine.
     if any(marker in lowered for marker in HARD_MARKERS):
         return Routing(False, "needs reasoning")
     if any(marker in lowered for marker in STRUCTURE_MARKERS):
         return Routing(False, "multi-step request")
+    if any(marker in lowered for marker in ACTION_MARKERS):
+        return Routing(False, "wants an action taken", needs_tool=True)
+    if asks_about_this_machine(stripped):
+        return Routing(False, "asks about this machine", needs_tool=True)
     if CODE_PATTERN.search(stripped):
         return Routing(False, "code")
     if MATH_PATTERN.search(stripped):
@@ -128,7 +203,48 @@ _UNCERTAIN = (
     "i don't have enough",
     "cannot determine",
 )
+
+# Deflection: instead of using a tool, the model told the user to go do it
+# themselves. This is the single most annoying failure mode - the assistant
+# has hands and answers with a tutorial - so it is detected explicitly.
+_DEFLECTED = (
+    "i don't have direct access",
+    "i do not have direct access",
+    "i don't have access to",
+    "i do not have access to",
+    "i don't see any direct tool",
+    "i'm unable to access",
+    "i am unable to access",
+    "i'm unable to directly",
+    "i am unable to directly",
+    "unable to directly check",
+    "i can't directly check",
+    "i cannot directly check",
+    "you can check this by",
+    "you can use file explorer",
+    "you would need to",
+    "you'll need to",
+    "right-click",
+    "open task manager",
+    "task manager",
+)
 MIN_USEFUL_CHARS = 2
+
+
+def looks_like_deflection(answer: str) -> bool:
+    """True when a reply explains how to do something instead of doing it."""
+    return any(phrase in answer.lower() for phrase in _DEFLECTED)
+
+
+# Small models sometimes *write out* a tool call as prose instead of emitting
+# it on the tool-call channel, leaking raw JSON into the answer. Observed from
+# the 3B: 'subur "{ "name": "apps.list_processes", "arguments": {...}}"'.
+_TOOL_LEAK = re.compile(r"[\"'](?:name|arguments|tool_call|function)[\"']\s*:", re.I)
+
+
+def looks_like_tool_leak(answer: str) -> bool:
+    """True when a reply contains a tool call the model failed to actually make."""
+    return bool(_TOOL_LEAK.search(answer))
 
 
 def should_escalate(answer: str) -> tuple[bool, str]:
@@ -139,6 +255,8 @@ def should_escalate(answer: str) -> tuple[bool, str]:
     lowered = text.lower()
     if any(phrase in lowered for phrase in _UNCERTAIN):
         return True, "local model was unsure"
+    if looks_like_deflection(text):
+        return True, "local model explained instead of acting"
     # Small models sometimes loop a phrase; a very repetitive answer is broken.
     words = lowered.split()
     if len(words) > 30 and len(set(words)) < len(words) * 0.35:
