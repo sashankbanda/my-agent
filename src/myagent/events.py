@@ -16,6 +16,8 @@ import sqlite3
 from enum import StrEnum
 from typing import Any
 
+from myagent.bus import broadcaster
+
 
 class EventType(StrEnum):
     """Catalogue of event types written to the log."""
@@ -37,6 +39,11 @@ class EventType(StrEnum):
 
     # M3 - voice
     TURN_INTERRUPTED = "TurnInterrupted"
+    VOICE_STATE = "VoiceState"  # idle | listening | thinking | speaking
+    VOICE_CONNECTED = "VoiceConnected"
+    VOICE_DISCONNECTED = "VoiceDisconnected"
+    USER_SAID = "UserSaid"
+    ASSISTANT_SAID = "AssistantSaid"
 
     # M4 - tools and permissions
     TOOL_CALL_REQUESTED = "ToolCallRequested"
@@ -61,13 +68,18 @@ def append_event(
     ``data`` must be JSON-serializable; it is stored compactly. Events are
     facts about what happened - never put secrets or raw prompt bodies here.
     """
-    data_json = json.dumps(data or {}, separators=(",", ":"), ensure_ascii=False)
+    payload = data or {}
+    data_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     cursor = conn.execute(
         "INSERT INTO events (type, trace_id, data_json) VALUES (?, ?, ?)",
         (type_.value, trace_id, data_json),
     )
     row_id = cursor.lastrowid
     assert row_id is not None  # INSERT on a rowid table always yields an id
+    # Same information, push side: this is what the HUD and overlay render.
+    broadcaster.publish(
+        {"id": row_id, "type": type_.value, "session_id": trace_id, "data": payload}
+    )
     return row_id
 
 

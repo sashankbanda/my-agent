@@ -25,8 +25,11 @@ import re
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from myagent.core.loop import AgentLoop
+from myagent.db import connection
+from myagent.events import EventType, append_event
 from myagent.gateway.types import GatewayError
 from myagent.logging import get_logger
+from myagent.server.events_ws import publish_state
 
 log = get_logger(__name__)
 
@@ -89,6 +92,8 @@ async def _run_turn(
         if remainder and not turn.cancel.is_set():
             await websocket.send_text(json.dumps({"type": "say", "text": remainder, "seq": seq}))
         await websocket.send_text(json.dumps({"type": "turn_done", "full_text": full_text}))
+        with connection(loop_.db_path) as conn:
+            append_event(conn, EventType.ASSISTANT_SAID, {"text": full_text}, session_id)
     except GatewayError as exc:
         log.warning("voice_turn_failed", session=session_id, error=str(exc))
         await websocket.send_text(json.dumps({"type": "error", "message": str(exc)}))
@@ -96,11 +101,21 @@ async def _run_turn(
 
 @router.websocket("/voice")
 async def voice_ws(websocket: WebSocket) -> None:
-    """Persistent connection from the voice satellite process."""
-    loop_: AgentLoop = websocket.app.state.loop
+    """Persistent connection from the voice satellite process.
+
+    Also mirrors voice activity into the event stream (state, transcripts) so
+    the HUD and overlay can show what is happening without reading logs.
+    """
+    app = websocket.app
+    loop_: AgentLoop = app.state.loop
     await websocket.accept()
     session_id = loop_.ensure_session(None)
     await websocket.send_text(json.dumps({"type": "session", "session_id": session_id}))
+
+    app.state.voice_connected = True
+    with connection(loop_.db_path) as conn:
+        append_event(conn, EventType.VOICE_CONNECTED, {"session": session_id})
+    publish_state(app, "idle", loop_.db_path)
 
     current: _Turn | None = None
     try:
@@ -110,11 +125,17 @@ async def voice_ws(websocket: WebSocket) -> None:
             if kind == "cancel":
                 if current is not None:
                     current.cancel.set()
+                publish_state(app, "listening", loop_.db_path)
+            elif kind == "state" and isinstance(frame.get("value"), str):
+                publish_state(app, frame["value"], loop_.db_path)
             elif kind == "utterance" and isinstance(frame.get("text"), str):
                 if current is not None and current.task is not None:
                     current.cancel.set()  # a new utterance supersedes the old turn
                     with contextlib.suppress(asyncio.CancelledError):
                         await current.task
+                with connection(loop_.db_path) as conn:
+                    append_event(conn, EventType.USER_SAID, {"text": frame["text"]}, session_id)
+                publish_state(app, "thinking", loop_.db_path)
                 current = _Turn()
                 current.task = asyncio.create_task(
                     _run_turn(websocket, loop_, session_id, frame["text"], current)
@@ -127,3 +148,8 @@ async def voice_ws(websocket: WebSocket) -> None:
         if current is not None:
             current.cancel.set()
         return
+    finally:
+        app.state.voice_connected = False
+        publish_state(app, "offline", loop_.db_path)
+        with connection(loop_.db_path) as conn:
+            append_event(conn, EventType.VOICE_DISCONNECTED, {})

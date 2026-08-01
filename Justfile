@@ -2,9 +2,17 @@
 
 set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 
-# Run the kernel locally
+# Start everything: kernel + voice + overlay + HUD (Ctrl+C stops all)
+start:
+    uv run python -m myagent.start
+
+# Run only the kernel
 dev:
     uv run python -m myagent
+
+# Run only the overlay orb (kernel must be running)
+overlay:
+    uv run python -m myagent.overlay
 
 # Run the test suite
 test:

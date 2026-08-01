@@ -87,6 +87,7 @@ class Pipeline:
         self._barge_run_frames = 0
         self._barge_needed = max(1, int(BARGE_IN_MS * SAMPLE_RATE / 1000 / FRAME_SAMPLES))
         self._ptt_down = False
+        self._reported_listening = False  # debounce for "listening" state events
         if settings.mode == "ptt":
             self._install_ptt_hook()
 
@@ -155,6 +156,11 @@ class Pipeline:
         """Extend the no-wake-word window from *now* (called when speech ends)."""
         self._attend_until = time.monotonic() + self.settings.wake.followup_window
 
+    async def _report_state(self, socket: websockets.ClientConnection, state: str) -> None:
+        """Tell the kernel what the voice edge is doing, for the UIs."""
+        with contextlib.suppress(websockets.WebSocketException):
+            await socket.send(json.dumps({"type": "state", "value": state}))
+
     def _install_ptt_hook(self) -> None:
         import keyboard  # global hotkey hook (Windows-friendly)
 
@@ -220,10 +226,17 @@ class Pipeline:
             if time.monotonic() < self._quiet_until:
                 continue
 
+            # Surface "I can hear you" the moment speech starts, so the HUD
+            # and overlay light up while the user is still talking.
+            if self.segmenter.in_speech and not self._reported_listening:
+                self._reported_listening = True
+                await self._report_state(socket, "listening")
+
             utterance = self.segmenter.feed(frame, probability)
             if utterance is None:
                 continue
             self.vad.reset()
+            self._reported_listening = False
             self._refresh_attention()  # keep the window open while transcribing
 
             text = await asyncio.to_thread(self.stt.transcribe, utterance.audio)
@@ -265,15 +278,16 @@ class Pipeline:
             elif kind == "session":
                 log.info("session", session_id=frame.get("session_id"))
 
-    async def speak(self) -> None:
+    async def speak(self, socket: websockets.ClientConnection) -> None:
         """Sentence queue -> synthesis -> speaker."""
         while True:
             sentence = await self._sentences.get()
             samples, rate = await asyncio.to_thread(self.tts.synthesize, sentence)
             async with self._audio_lock:  # never play into a mid-rebuild stream
                 self.speaker.play(samples, rate)
+            await self._report_state(socket, "speaking")
 
-    async def playback_watcher(self) -> None:
+    async def playback_watcher(self, socket: websockets.ClientConnection) -> None:
         """Start the follow-up window when speech actually stops.
 
         Without this the window is measured from the end of the *text*, so a
@@ -288,6 +302,7 @@ class Pipeline:
                 self._refresh_attention()
                 self.segmenter.reset()
                 self.vad.reset()
+                await self._report_state(socket, "waiting")
                 log.debug("listening_again", seconds=self.settings.wake.followup_window)
             was_active = active
             await asyncio.sleep(0.1)
@@ -310,8 +325,8 @@ class Pipeline:
                         tasks = [
                             asyncio.create_task(self.listen(socket)),
                             asyncio.create_task(self.receive(socket)),
-                            asyncio.create_task(self.speak()),
-                            asyncio.create_task(self.playback_watcher()),
+                            asyncio.create_task(self.speak(socket)),
+                            asyncio.create_task(self.playback_watcher(socket)),
                         ]
                         done, pending = await asyncio.wait(
                             tasks, return_when=asyncio.FIRST_EXCEPTION

@@ -27,6 +27,7 @@ dev = [
     "ruff>=0.8",
     "pyright>=1.1.390",
     "httpx2>=2.9.1",
+    "pytest-timeout>=2.4.0",
 ]
 # Voice satellite (CPU-only ONNX stack). Kernel-only installs: --no-group voice
 voice = [
@@ -82,7 +83,11 @@ venv = ".venv"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# No test may hang the suite: sockets and subprocesses are involved, and a
+# blocked receive used to stall CI indefinitely.
+timeout = 120
 
 [project.scripts]
 myagent = "myagent.__main__:main"
+myagent-start = "myagent.start:main"
 

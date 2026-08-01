@@ -5,50 +5,63 @@ Quick reference for daily use. Every command runs from the project root:
 
 ---
 
-## TL;DR — the two commands you need
+## TL;DR — one command, one terminal
 
-**Terminal 1 — the brain (always start this first):**
-```
-uv run python -m myagent
-```
-Wait for: `Uvicorn running on http://127.0.0.1:8765`
+**Double-click `MyAgent.bat`**, or in a terminal:
 
-**Terminal 2 — the voice (optional):**
 ```
-uv run python -m myagent.voice
+uv run python -m myagent.start
 ```
-Wait for: `voice_ready` and `kernel_connected`
 
-Then either **talk** (say your wake word — check `wake.model` in
-[config/voice.yaml](config/voice.yaml)) or **type** at http://127.0.0.1:8765
+That starts everything and prints what it started:
 
-Stop anything with `Ctrl+C` in its terminal.
+```
+starting MyAgent...
+  kernel   http://127.0.0.1:8765
+  voice    starting (models load on first run)
+  overlay  orb on screen (drag it; click opens the HUD)
+  HUD      opened in your browser
+
+ready. press Ctrl+C here to stop everything.
+```
+
+- **The HUD** (browser) shows the conversation, a live activity feed of every
+  action, provider health and quota, memory counts, and an emergency stop.
+- **The overlay orb** floats above other windows: grey = voice off, blue =
+  ready, green pulse = hearing you, amber spin = thinking, blue pulse =
+  speaking. Drag to move, click to open the HUD, right-click for a menu.
+- **Ctrl+C** in that terminal stops everything. Even if the window is killed,
+  Windows terminates the child processes (they run in a job object).
+
+Options: `--no-voice` (text only), `--no-overlay`, `--no-browser`,
+`--corner top-left|top-right|bottom-left|bottom-right`.
+
+You no longer need to read terminal output — everything shows up in the HUD.
 
 ---
 
-## Text chat (no voice)
+## Running parts by hand (debugging)
 
-Only Terminal 1 is needed.
-
-1. `uv run python -m myagent`
-2. Open http://127.0.0.1:8765 in your browser.
-3. Buttons in the top right:
-   - **Memory** — what it remembers about you; add/delete facts; "Back up now"
-   - **Activity** — live audit log of every action + the **Emergency stop** button
-
----
-
-## Voice chat
-
-| Terminal | Command | Wait for |
+| What | Command | Wait for |
 |---|---|---|
-| 1 | `uv run python -m myagent` | `Uvicorn running on http://127.0.0.1:8765` |
-| 2 | `uv run python -m myagent.voice` | `voice_ready`, `kernel_connected` |
+| kernel only | `uv run python -m myagent` | `Uvicorn running on http://127.0.0.1:8765` |
+| voice only | `uv run python -m myagent.voice` | `voice_ready`, `kernel_connected` |
+| overlay only | `uv run python -m myagent.overlay` | orb appears |
 
-Then: say your **wake word**, pause half a beat, then speak your request.
-After each reply you have ~8 seconds to keep talking without the wake word.
+The kernel must be running before voice or overlay.
 
-Talking over it stops it (barge-in) — works best with a headset.
+---
+
+## Using voice
+
+Say your **wake word** (check `wake.model` in
+[config/voice.yaml](config/voice.yaml)), pause half a beat, then speak.
+
+After it replies you have **30 seconds** to keep talking with no wake word —
+and every exchange refreshes that window, so a real back-and-forth continues
+indefinitely. Talking over it interrupts it (best with a headset).
+
+Watch the orb to know whether it heard you.
 
 ---
 
@@ -185,6 +198,7 @@ Permission behavior:
 
 | Purpose | Command |
 |---|---|
+| Start everything | `uv run python -m myagent.start` |
 | Run tests | `uv run pytest` |
 | Fast subset | `uv run pytest tests/test_redteam.py -q` |
 | Lint + format | `uv run ruff format src tests scripts` then `uv run ruff check src tests scripts` |
@@ -219,4 +233,15 @@ Permission behavior:
 | M2 Memory + encrypted Drive backup | done |
 | M3 Voice (wake word, barge-in) | done |
 | M4 Hands + permission broker | done |
+| HUD + overlay + launcher | done (brought forward from M8 polish) |
 | M5 Web + scheduling | next |
+
+---
+
+## A note on free-tier quotas
+
+The HUD's provider panel shows today's usage per model. Those counters live in
+your database, so they reflect *this machine's* usage — the providers keep
+their own counts. If every provider shows 429 errors in the activity feed,
+you have genuinely used up today's free allowance; it resets on their
+schedule (Groq per-minute, Gemini and OpenRouter daily).
