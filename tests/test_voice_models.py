@@ -86,7 +86,11 @@ def test_vad_scores_speech_above_silence(spoken_16k: np.ndarray) -> None:
 
 @needs_models
 def test_full_local_loop_tts_vad_stt(spoken_16k: np.ndarray) -> None:
-    """TTS speech -> VAD segmentation -> whisper transcription, end to end."""
+    """TTS speech -> VAD segmentation -> whisper transcription, end to end.
+
+    Pinned to the local engine so this test never depends on the network.
+    """
+    from myagent.voice.config import SttSettings
     from myagent.voice.stt import Transcriber
     from myagent.voice.vad import SileroVad
 
@@ -106,7 +110,7 @@ def test_full_local_loop_tts_vad_stt(spoken_16k: np.ndarray) -> None:
             utterances.append(result)
     assert len(utterances) == 1, f"expected one utterance, got {len(utterances)}"
 
-    stt = Transcriber(SETTINGS.stt, MODELS_DIR)
+    stt = Transcriber(SttSettings(engine="local"), MODELS_DIR)
     text = stt.transcribe(utterances[0].audio).lower()
     assert "hello world" in text
     assert "voice" in text

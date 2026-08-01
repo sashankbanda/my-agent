@@ -11,13 +11,14 @@ automation. UIA-based control of app *interiors* is M7.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
+import webbrowser
 from typing import Any
 
 import psutil
 
 from myagent.security.tiers import Tier
+from myagent.tools.applookup import find_application, list_known_applications
 from myagent.tools.paths import configured_roots, resolve_allowed
 from myagent.tools.registry import ToolContext, ToolError, tool
 
@@ -28,39 +29,101 @@ MAX_PROCESSES = 60
     name="apps.open",
     tier=Tier.REVERSIBLE,
     description=(
-        "Open an application by name (e.g. 'notepad', 'code') or open a file "
-        "or folder with its default program. Files must be inside the "
-        "permitted folders."
+        "Open an installed application by name ('chrome', 'spotify', 'vs code', "
+        "'file explorer'), or open a file or folder ('Downloads', "
+        "'Documents/notes.txt'). Folder and file paths must be inside the "
+        "permitted folders; application names may be anything installed."
     ),
     params={
         "target": {
             "type": "string",
-            "description": "Program name, or a path to a file/folder to open",
+            "description": "Application name, or a file/folder path to open",
         }
     },
     required=["target"],
     summarize=lambda args: f"open {args.get('target')}",
 )
 def open_target(context: ToolContext, target: str) -> dict[str, Any]:
-    """Launch a program, or open a path with its associated application."""
+    """Open an app, a folder, or a file.
+
+    Applications are resolved the way Windows itself does (PATH, App Paths
+    registry, Start Menu shortcuts) rather than PATH alone, because GUI apps
+    are almost never on PATH. Only *paths* are constrained to the permitted
+    roots - launching an installed program is not a filesystem operation.
+    """
     if not target.strip():
         raise ToolError("target is empty")
 
-    executable = shutil.which(target)
-    if executable is not None:
-        # Resolved absolute path, argv form, no shell: nothing to inject into.
-        subprocess.Popen(
-            [executable],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return {"opened": executable, "kind": "program"}
+    found = find_application(target)
+    if found is not None:
+        kind, resolved = found
+        if kind == "exe":
+            # Resolved absolute path, argv form, no shell: nothing to inject.
+            subprocess.Popen(
+                [resolved],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:  # shortcut or protocol URI: the shell knows how to start these
+            os.startfile(resolved)
+        return {"opened": resolved, "kind": "application"}
 
-    # Windows file association (same as double-clicking); path is allowlisted.
-    path = resolve_allowed(target, configured_roots(context.settings), must_exist=True)
-    os.startfile(path)
-    return {"opened": str(path), "kind": "path"}
+    try:
+        path = resolve_allowed(target, configured_roots(context.settings), must_exist=True)
+    except ToolError as exc:
+        known = ", ".join(list_known_applications(limit=25))
+        raise ToolError(
+            f"could not find an application called '{target}', and it is not an "
+            f"openable path either ({exc}). Installed apps include: {known}"
+        ) from exc
+    os.startfile(path)  # Windows file association (same as double-clicking)
+    return {"opened": str(path), "kind": "folder" if path.is_dir() else "file"}
+
+
+@tool(
+    name="apps.open_url",
+    tier=Tier.REVERSIBLE,
+    description=(
+        "Open a web page in the default browser. Use this for 'open youtube', "
+        "'search for X', or any link the user asks to visit."
+    ),
+    params={"url": {"type": "string", "description": "Full URL, e.g. https://example.com"}},
+    required=["url"],
+    summarize=lambda args: f"open {args.get('url')} in the browser",
+)
+def open_url(context: ToolContext, url: str) -> dict[str, Any]:
+    """Open a URL in the user's default browser."""
+    cleaned = url.strip()
+    if not cleaned:
+        raise ToolError("url is empty")
+    if "://" not in cleaned:
+        cleaned = f"https://{cleaned}"
+    if not cleaned.startswith(("http://", "https://")):
+        raise ToolError(f"only http and https links can be opened: {url}")
+    webbrowser.open(cleaned)
+    return {"opened": cleaned, "kind": "url"}
+
+
+@tool(
+    name="apps.list_applications",
+    tier=Tier.READ,
+    description=(
+        "List installed applications that can be opened by name. Returns a "
+        "sample, not an exhaustive list - apps.open also finds apps that are "
+        "not listed here."
+    ),
+    params={"limit": {"type": "integer", "description": "How many to return (default 40)"}},
+)
+def list_applications(context: ToolContext, limit: int = 40) -> dict[str, Any]:
+    """Installed application names, from the Start Menu.
+
+    Deliberately capped: this result is resent to the model on every later
+    step of the turn, and a few hundred names is enough to blow a free tier's
+    tokens-per-minute budget on its own.
+    """
+    names = list_known_applications(limit=max(1, min(limit, 100)))
+    return {"count": len(names), "applications": names}
 
 
 @tool(

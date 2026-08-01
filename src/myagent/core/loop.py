@@ -60,6 +60,11 @@ BUDGET_PROMPT = (
     "the user honestly what you completed, what failed, and what remains."
 )
 
+# Free tiers have tight tokens-per-minute limits (Groq: 12k/min), and a tool
+# result is resent with every subsequent step, so a fat observation can
+# rate-limit the whole conversation. Keep them small.
+MAX_OBSERVATION_CHARS = 4_000
+
 
 class AgentLoop:
     """Turn-by-turn conversation engine bound to one database and gateway."""
@@ -114,6 +119,7 @@ class AgentLoop:
         model_key: str | None = None
         tokens: int | None = None
         interrupted = False
+        tool_history_provider: str | None = None  # who produced the tool calls so far
 
         for step in range(self._max_steps + 1):
             out_of_budget = step == self._max_steps or time.monotonic() > deadline
@@ -131,6 +137,7 @@ class AgentLoop:
                 ),
                 trace_id=session_id,
                 tools=None if out_of_budget else tool_schemas,
+                tool_history_provider=tool_history_provider,
             )
 
             step_text = ""
@@ -158,12 +165,14 @@ class AgentLoop:
                 break
 
             messages.append(ChatMessage(role="assistant", content=step_text, tool_calls=calls))
+            if model_key:
+                tool_history_provider = model_key.split("/", 1)[0]
             for call in calls:
                 result = await self._run_tool(call, turn)
                 messages.append(
                     ChatMessage(
                         role="tool",
-                        content=json.dumps(result, default=str)[:20_000],
+                        content=json.dumps(result, default=str)[:MAX_OBSERVATION_CHARS],
                         tool_call_id=call.id,
                     )
                 )

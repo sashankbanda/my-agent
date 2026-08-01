@@ -25,6 +25,7 @@ from typing import Any, Protocol
 from myagent.db import connection
 from myagent.events import EventType, append_event
 from myagent.gateway.health import HealthTracker
+from myagent.gateway.portability import flatten_tool_history, has_tool_history
 from myagent.gateway.privacy import classify, filter_candidates
 from myagent.gateway.quota import QuotaGovernor
 from myagent.gateway.registry import Registry
@@ -100,6 +101,18 @@ class Gateway:
                 log.debug("candidate_quota_exhausted", model=spec.key)
                 continue
 
+            # A transcript carrying another provider's tool calls is not
+            # portable (Gemini and some OpenRouter models reject it outright),
+            # so narrate those exchanges instead when switching providers.
+            messages = request.messages
+            if (
+                request.tool_history_provider
+                and request.tool_history_provider != spec.provider
+                and has_tool_history(messages)
+            ):
+                messages = flatten_tool_history(messages)
+                log.info("flattened_tool_history", to=spec.provider)
+
             attempted += 1
             self._quota.record_request(spec)
             self._emit(
@@ -113,7 +126,7 @@ class Gateway:
             try:
                 async for delta in self._client.stream(
                     spec,
-                    request.messages,
+                    messages,
                     usage,
                     request.max_tokens,
                     request.tools,

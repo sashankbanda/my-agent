@@ -67,6 +67,10 @@ class InferenceRequest(BaseModel):
     max_tokens: int | None = None
     trace_id: str | None = None
     tools: list[dict[str, Any]] | None = None  # OpenAI-style function-tool schemas
+    # Provider that produced any tool calls in ``messages``. When a candidate
+    # from a different provider is tried, the gateway flattens that history to
+    # plain text so failover works mid-task (see gateway.portability).
+    tool_history_provider: str | None = None
 
 
 class InferenceChunk(BaseModel):

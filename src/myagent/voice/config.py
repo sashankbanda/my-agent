@@ -20,7 +20,9 @@ FRAME_SAMPLES = 512  # 32 ms - the Silero VAD frame size at 16 kHz
 class WakeSettings(BaseModel):
     model: str = "hey_jarvis"
     threshold: float = 0.5
-    followup_window: float = 8.0
+    # Seconds of attention after the assistant STOPS SPEAKING. Every exchange
+    # refreshes it, so a real back-and-forth never needs the wake word again.
+    followup_window: float = 30.0
 
 
 class VadSettings(BaseModel):
@@ -31,7 +33,11 @@ class VadSettings(BaseModel):
 
 
 class SttSettings(BaseModel):
-    model: str = "base.en"
+    # groq: fast cloud Whisper (falls back to local automatically on failure)
+    # local: fully offline CPU Whisper, noticeably slower
+    engine: Literal["groq", "local"] = "groq"
+    groq_model: str = "whisper-large-v3-turbo"
+    model: str = "base.en"  # local engine size: tiny.en | base.en | small.en
     compute_type: str = "int8"
 
 

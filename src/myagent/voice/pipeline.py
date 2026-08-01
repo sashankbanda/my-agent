@@ -13,11 +13,20 @@ next utterance. Without echo cancellation the assistant can hear itself on
 open speakers, so barge-in requires a longer sustained-speech run than normal
 triggering (BARGE_IN_MS); a headset makes it precise. AEC is future work.
 
-Attention model:
-- wake:       listen for the wake word; attend for one exchange plus a
-              follow-up window after each reply.
-- ptt:        attend while the push-to-talk hotkey is held.
-- continuous: always attending.
+Attention model (wake mode) - designed to feel like a conversation, not a
+command line:
+
+- the wake word opens attention
+- attention *stays* open while the assistant is speaking and for
+  ``wake.followup_window`` seconds after playback actually finishes, so
+  replying needs no wake word
+- every exchange refreshes that window, so a real back-and-forth continues
+  indefinitely; it only closes after genuine silence
+
+Echo handling (no AEC yet): the mic hears the assistant through open
+speakers, so while playback is active the audio feeds ONLY the barge-in
+detector - never the segmenter. Otherwise the assistant transcribes itself and
+answers its own words. A short cooldown after playback absorbs the tail.
 """
 
 from __future__ import annotations
@@ -46,7 +55,8 @@ from myagent.voice.wake import WAKE_CHUNK_SAMPLES, WakeDetector
 
 log = get_logger(__name__)
 
-BARGE_IN_MS = 400  # sustained speech needed to interrupt playback (echo guard)
+BARGE_IN_MS = 500  # sustained speech needed to interrupt playback (echo guard)
+ECHO_COOLDOWN_S = 0.4  # ignore the mic briefly after playback (speaker tail)
 RECONNECT_DELAY_S = 3.0
 DEAD_INPUT_TRIP_S = 6.0  # this much digital silence -> re-probe input devices
 IDLE_RESYNC_S = 30.0  # while idle, re-open streams so they follow device switches
@@ -70,8 +80,9 @@ class Pipeline:
         self._open_audio(probe=settings.input_device is None)
 
         self._sentences: asyncio.Queue[str] = asyncio.Queue()
-        self._attending = settings.mode == "continuous"
-        self._attend_until = 0.0
+        self._attend_until = 0.0  # attention deadline; refreshed by every exchange
+        self._turn_active = False  # a reply is being generated or spoken
+        self._quiet_until = 0.0  # echo cooldown after playback stops
         self._wake_buffer = np.zeros(0, dtype=np.float32)
         self._barge_run_frames = 0
         self._barge_needed = max(1, int(BARGE_IN_MS * SAMPLE_RATE / 1000 / FRAME_SAMPLES))
@@ -131,11 +142,18 @@ class Pipeline:
     # -- attention ---------------------------------------------------------
 
     def _is_attending(self) -> bool:
+        """Whether speech should be treated as directed at the assistant."""
         if self.settings.mode == "continuous":
             return True
         if self.settings.mode == "ptt":
             return self._ptt_down
-        return self._attending or time.monotonic() < self._attend_until
+        # Stay attentive through the whole exchange: while the assistant is
+        # working or speaking, and for the follow-up window after it stops.
+        return self._turn_active or self.speaker.is_active or time.monotonic() < self._attend_until
+
+    def _refresh_attention(self) -> None:
+        """Extend the no-wake-word window from *now* (called when speech ends)."""
+        self._attend_until = time.monotonic() + self.settings.wake.followup_window
 
     def _install_ptt_hook(self) -> None:
         import keyboard  # global hotkey hook (Windows-friendly)
@@ -177,30 +195,43 @@ class Pipeline:
 
             probability = await asyncio.to_thread(self.vad, frame)
 
-            # Barge-in: user speaks over the assistant.
+            # While the assistant speaks, this audio is mostly its own voice.
+            # Use it ONLY to detect barge-in; never segment it as user speech.
             if self.speaker.is_active:
-                self._barge_run_frames = (
-                    self._barge_run_frames + 1 if probability >= self.settings.vad.threshold else 0
-                )
+                if probability >= self.settings.vad.threshold:
+                    self._barge_run_frames += 1
+                else:
+                    self._barge_run_frames = 0
                 if self._barge_run_frames >= self._barge_needed:
                     log.info("barge_in")
                     self.speaker.flush()
                     self._drain_sentences()
                     await socket.send(json.dumps({"type": "cancel"}))
                     self._barge_run_frames = 0
+                    self._turn_active = False
+                    # Start listening cleanly: the user is mid-sentence, and
+                    # everything captured so far is echo.
+                    self._quiet_until = time.monotonic() + ECHO_COOLDOWN_S
+                    self.segmenter.reset()
+                    self.vad.reset()
+                continue
+
+            # Speaker tail after playback: still echo, not the user.
+            if time.monotonic() < self._quiet_until:
+                continue
 
             utterance = self.segmenter.feed(frame, probability)
             if utterance is None:
                 continue
             self.vad.reset()
+            self._refresh_attention()  # keep the window open while transcribing
 
             text = await asyncio.to_thread(self.stt.transcribe, utterance.audio)
             if not text:
                 continue
             log.info("utterance", text=text, seconds=round(utterance.duration_s, 2))
+            self._turn_active = True
             await socket.send(json.dumps({"type": "utterance", "text": text}))
-            if self.settings.mode == "wake":
-                self._attending = False  # re-attend on turn_done's follow-up window
 
     def _feed_wake(self, frame: np.ndarray) -> None:
         assert self.wake is not None
@@ -210,7 +241,7 @@ class Pipeline:
             self._wake_buffer = self._wake_buffer[WAKE_CHUNK_SAMPLES:]
             if self.wake.process(chunk):
                 log.info("wake_word")
-                self._attending = True
+                self._refresh_attention()
                 self.segmenter.reset()
                 self.vad.reset()
 
@@ -222,10 +253,15 @@ class Pipeline:
             if kind == "say":
                 await self._sentences.put(frame["text"])
             elif kind == "turn_done":
-                if self.settings.mode == "wake":
-                    self._attend_until = time.monotonic() + self.settings.wake.followup_window
+                # The reply text is complete, but speech is still playing; the
+                # follow-up window starts when the *audio* finishes (see
+                # playback_watcher), so do not start it here.
+                self._turn_active = False
+                self._refresh_attention()
             elif kind == "error":
                 log.warning("kernel_error", message=frame.get("message"))
+                self._turn_active = False
+                self._refresh_attention()
             elif kind == "session":
                 log.info("session", session_id=frame.get("session_id"))
 
@@ -236,6 +272,25 @@ class Pipeline:
             samples, rate = await asyncio.to_thread(self.tts.synthesize, sentence)
             async with self._audio_lock:  # never play into a mid-rebuild stream
                 self.speaker.play(samples, rate)
+
+    async def playback_watcher(self) -> None:
+        """Start the follow-up window when speech actually stops.
+
+        Without this the window is measured from the end of the *text*, so a
+        long spoken reply eats it entirely and the user has to say the wake
+        word again - the single biggest reason voice felt un-conversational.
+        """
+        was_active = False
+        while True:
+            active = self.speaker.is_active
+            if was_active and not active:
+                self._quiet_until = time.monotonic() + ECHO_COOLDOWN_S
+                self._refresh_attention()
+                self.segmenter.reset()
+                self.vad.reset()
+                log.debug("listening_again", seconds=self.settings.wake.followup_window)
+            was_active = active
+            await asyncio.sleep(0.1)
 
     def _drain_sentences(self) -> None:
         while not self._sentences.empty():
@@ -256,6 +311,7 @@ class Pipeline:
                             asyncio.create_task(self.listen(socket)),
                             asyncio.create_task(self.receive(socket)),
                             asyncio.create_task(self.speak()),
+                            asyncio.create_task(self.playback_watcher()),
                         ]
                         done, pending = await asyncio.wait(
                             tasks, return_when=asyncio.FIRST_EXCEPTION

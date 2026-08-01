@@ -1,9 +1,9 @@
 # Voice satellite configuration.
 #
 # The voice process is a separate program (uv run python -m myagent.voice)
-# that talks to the kernel over WebSocket only. Everything here is local and
-# CPU-only; audio never leaves this machine (wake word, VAD, STT, TTS all
-# run on-device).
+# that talks to the kernel over WebSocket only. Wake word and voice-activity
+# detection ALWAYS run on-device; nothing is sent anywhere until a complete
+# utterance has been detected locally.
 #
 # Models are downloaded once by: uv run python scripts/setup_voice.py
 
@@ -23,23 +23,32 @@ output_device: null
 models_dir: null
 
 wake:
-  # openWakeWord built-in model names: hey_jarvis, alexa, hey_mycroft, ...
+  # openWakeWord built-in model names: hey_jarvis, alexa, hey_mycroft.
+  # Run --mic-check and watch the score columns to pick the one your voice
+  # actually triggers, then set it here.
   model: hey_jarvis
-  # 0.4 suits a laptop mic array at arm's length; run --mic-check and watch
-  # the "wake" column while saying the wake word to tune this with data.
+  # Slightly BELOW your typical score in --mic-check.
   threshold: 0.4
-  # Seconds after a wake-up during which follow-up speech needs no wake word.
-  followup_window: 8.0
+  # Seconds of attention AFTER the assistant finishes speaking. Each exchange
+  # refreshes this, so a continuing conversation never needs the wake word
+  # again - it only closes after this much real silence.
+  followup_window: 30.0
 
 vad:
   threshold: 0.5
   min_speech_ms: 250    # shorter bursts are ignored as noise
-  silence_ms: 700       # this much silence ends the utterance
+  silence_ms: 600       # this much silence ends the utterance (lower = snappier)
   max_utterance_s: 30   # hard cap; force-close pathological segments
 
 stt:
-  model: base.en        # faster-whisper size: tiny.en | base.en | small.en ...
-  compute_type: int8    # CPU-friendly quantization
+  # groq:  fast cloud Whisper (~5x faster than local CPU here). Utterance
+  #        audio is uploaded to Groq; falls back to local automatically if the
+  #        network or API fails.
+  # local: fully offline, slower. Use 'tiny.en' below to speed it up.
+  engine: groq
+  groq_model: whisper-large-v3-turbo
+  model: base.en        # local engine: tiny.en | base.en | small.en
+  compute_type: int8
 
 tts:
   # windows: instant OS voices (default - works on any CPU, no downloads)

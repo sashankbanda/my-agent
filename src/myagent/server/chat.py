@@ -35,8 +35,15 @@ class ChatBody(BaseModel):
 
 
 async def _turn_events(loop: AgentLoop, session_id: str, message: str) -> AsyncIterator[str]:
-    """Run one turn and yield wire-protocol payloads as JSON strings."""
+    """Run one turn and yield wire-protocol payloads as JSON strings.
+
+    ``done`` is emitted exactly once, when the whole turn ends. The loop's
+    per-step ``done`` chunks are internal boundaries between tool steps -
+    forwarding them would tell the UI the answer is finished while the
+    assistant is still working.
+    """
     yield json.dumps({"session_id": session_id})
+    model: str | None = None
     try:
         async for chunk in loop.respond(session_id, message):
             if chunk.reset:
@@ -44,10 +51,12 @@ async def _turn_events(loop: AgentLoop, session_id: str, message: str) -> AsyncI
             if chunk.delta:
                 yield json.dumps({"delta": chunk.delta})
             if chunk.done:
-                yield json.dumps({"done": True, "model": chunk.model_key})
+                model = chunk.model_key
     except GatewayError as exc:
         log.warning("turn_failed", session=session_id, error=str(exc))
         yield json.dumps({"error": str(exc)})
+        return
+    yield json.dumps({"done": True, "model": model})
 
 
 @router.post("/chat")

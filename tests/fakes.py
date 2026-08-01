@@ -31,6 +31,7 @@ class FakeClient:
     def __init__(self, scripts: dict[str, Script]) -> None:
         self.scripts = scripts
         self.calls: list[str] = []
+        self.last_messages: list[ChatMessage] = []  # transcript as the provider saw it
 
     def stream(
         self,
@@ -42,6 +43,7 @@ class FakeClient:
         tool_calls_out: list[ToolCall] | None = None,
     ) -> AsyncIterator[str]:
         self.calls.append(spec.key)
+        self.last_messages = list(messages)
         script = self.scripts[spec.key]
 
         async def run() -> AsyncIterator[str]:
