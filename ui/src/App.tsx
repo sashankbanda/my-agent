@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import MemoryPanel from "./MemoryPanel";
+import { ConfirmDialog, SecurityPanel, useSecuritySocket } from "./SecurityPanel";
 import { KernelClient, TurnEvent } from "./ws";
 
 type Message = { role: "user" | "assistant"; text: string; pending?: boolean };
@@ -12,6 +13,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showMemory, setShowMemory] = useState(false);
+  const [showSecurity, setShowSecurity] = useState(false);
+  const { pending, decide } = useSecuritySocket();
   const sessionRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -67,11 +70,18 @@ export default function App() {
     <div className="app">
       <header>
         <h1>MyAgent</h1>
-        <button className="ghost" onClick={() => setShowMemory((open) => !open)}>
-          Memory
-        </button>
+        <div className="header-actions">
+          <button className="ghost" onClick={() => setShowMemory((open) => !open)}>
+            Memory
+          </button>
+          <button className="ghost" onClick={() => setShowSecurity((open) => !open)}>
+            Activity
+          </button>
+        </div>
       </header>
+      {pending.length > 0 && <ConfirmDialog request={pending[0]} onDecide={decide} />}
       {showMemory && <MemoryPanel onClose={() => setShowMemory(false)} />}
+      {showSecurity && <SecurityPanel onClose={() => setShowSecurity(false)} />}
       <main>
         {messages.length === 0 && <p className="empty">Say something to get started.</p>}
         {messages.map((message, index) => (

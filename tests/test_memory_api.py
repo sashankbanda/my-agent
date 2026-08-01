@@ -56,9 +56,9 @@ def test_stated_fact_reaches_the_model(settings: Settings) -> None:
         fake = app.state.loop._gateway._client  # the FakeClient inside
         original = fake.stream
 
-        def spy(spec, messages, usage_out, max_tokens=None):  # type: ignore[no-untyped-def]
+        def spy(spec, messages, usage_out, max_tokens=None, tools=None, tool_calls_out=None):  # type: ignore[no-untyped-def]
             seen_prompts.append("\n".join(m.content for m in messages))
-            return original(spec, messages, usage_out, max_tokens)
+            return original(spec, messages, usage_out, max_tokens, tools, tool_calls_out)
 
         fake.stream = spy  # type: ignore[method-assign]
         client.post("/memory", json={"content": "the user is vegetarian"})

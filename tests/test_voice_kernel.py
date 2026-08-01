@@ -6,10 +6,11 @@ import asyncio
 import json
 import sqlite3
 from collections.abc import AsyncIterator
+from typing import Any
 
 from myagent.config import Settings
 from myagent.core import history
-from myagent.gateway.types import ChatMessage, ModelSpec, ProviderError
+from myagent.gateway.types import ChatMessage, ModelSpec, ProviderError, ToolCall
 from myagent.server.voice_ws import split_sentences
 from tests.fakes import FakeClient, Script
 from tests.test_chat_api import make_client
@@ -48,6 +49,8 @@ class SlowClient(FakeClient):
         messages: list[ChatMessage],
         usage_out: dict[str, int],
         max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_calls_out: list[ToolCall] | None = None,
     ) -> AsyncIterator[str]:
         self.calls.append(spec.key)
         script = self.scripts[spec.key]

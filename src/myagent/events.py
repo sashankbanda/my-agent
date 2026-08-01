@@ -38,6 +38,17 @@ class EventType(StrEnum):
     # M3 - voice
     TURN_INTERRUPTED = "TurnInterrupted"
 
+    # M4 - tools and permissions
+    TOOL_CALL_REQUESTED = "ToolCallRequested"
+    TOOL_CALL_COMPLETED = "ToolCallCompleted"
+    PERMISSION_DECIDED = "PermissionDecided"
+    CONFIRMATION_RESOLVED = "ConfirmationResolved"
+    GRANT_ADDED = "GrantAdded"
+    GRANT_REVOKED = "GrantRevoked"
+    KILL_SWITCH_ENGAGED = "KillSwitchEngaged"
+    KILL_SWITCH_RELEASED = "KillSwitchReleased"
+    BUDGET_EXCEEDED = "BudgetExceeded"
+
 
 def append_event(
     conn: sqlite3.Connection,

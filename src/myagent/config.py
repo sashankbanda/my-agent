@@ -67,6 +67,21 @@ class VaultSettings(BaseModel):
     keep_monthly: int = 12
 
 
+class ToolSettings(BaseModel):
+    """Capability limits for the tool layer (M4).
+
+    ``roots`` is the filesystem allowlist: tools may only touch paths inside
+    these folders. Empty means "the standard user folders" (see tools.paths).
+    Environment variables and ~ are expanded.
+    """
+
+    roots: list[str] = Field(default_factory=list)
+    max_read_bytes: int = 200_000  # cap on a single file read
+    shell_timeout_seconds: int = 60
+    max_steps_per_turn: int = 12  # bound on tool calls in one turn
+    max_turn_seconds: int = 300
+
+
 class Settings(BaseModel):
     """Root of all kernel configuration."""
 
@@ -74,6 +89,7 @@ class Settings(BaseModel):
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
     vault: VaultSettings = Field(default_factory=VaultSettings)
+    tools: ToolSettings = Field(default_factory=ToolSettings)
     features: dict[str, bool] = Field(default_factory=dict)
 
     def db_path(self) -> Path:

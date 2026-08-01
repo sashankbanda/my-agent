@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import sqlite3
 
-from tests.fakes import FakeClient, Script, make_registry
-
 from myagent.config import Settings
 from myagent.core import history
 from myagent.core.loop import AgentLoop
 from myagent.gateway.gateway import Gateway
 from myagent.gateway.health import HealthTracker
 from myagent.gateway.quota import QuotaGovernor
+from tests.fakes import FakeClient, Script, make_registry
 
 
 def build_loop(settings: Settings, scripts: dict[str, Script]) -> AgentLoop:
@@ -78,9 +77,9 @@ async def test_transcript_includes_prior_turns(db: sqlite3.Connection, settings:
     seen_transcripts: list[list[str]] = []
     original_stream = client.stream
 
-    def spying_stream(spec, messages, usage_out, max_tokens=None):  # type: ignore[no-untyped-def]
+    def spying_stream(spec, messages, usage_out, max_tokens=None, tools=None, tool_calls_out=None):  # type: ignore[no-untyped-def]
         seen_transcripts.append([m.content for m in messages])
-        return original_stream(spec, messages, usage_out, max_tokens)
+        return original_stream(spec, messages, usage_out, max_tokens, tools, tool_calls_out)
 
     client.stream = spying_stream  # type: ignore[method-assign]
     loop = AgentLoop(gateway, settings.db_path())

@@ -8,6 +8,7 @@ Provider SDK types never cross this boundary.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -35,11 +36,25 @@ class PrivacyClass(StrEnum):
     LOCAL_ONLY = "local_only"
 
 
+class ToolCall(BaseModel):
+    """A tool invocation requested by the model."""
+
+    id: str
+    name: str
+    arguments: str  # raw JSON as emitted by the model; parsed by the loop
+
+
 class ChatMessage(BaseModel):
-    """One turn in the model-facing conversation transcript."""
+    """One turn in the model-facing conversation transcript.
+
+    ``tool_calls`` appears on assistant messages that request tools;
+    ``tool_call_id`` links a tool-role message back to its request.
+    """
 
     role: str
     content: str
+    tool_calls: list[ToolCall] | None = None
+    tool_call_id: str | None = None
 
 
 class InferenceRequest(BaseModel):
@@ -51,6 +66,7 @@ class InferenceRequest(BaseModel):
     interactive: bool = True  # background work respects the quota headroom reserve
     max_tokens: int | None = None
     trace_id: str | None = None
+    tools: list[dict[str, Any]] | None = None  # OpenAI-style function-tool schemas
 
 
 class InferenceChunk(BaseModel):
@@ -59,6 +75,9 @@ class InferenceChunk(BaseModel):
     ``reset=True`` means a provider failed mid-stream and the gateway is
     restarting the answer on the next candidate: the consumer must discard
     all text accumulated so far for this request.
+
+    ``tool_calls`` is populated on the final chunk when the model asked for
+    tools instead of (or alongside) plain text.
     """
 
     delta: str = ""
@@ -66,6 +85,7 @@ class InferenceChunk(BaseModel):
     reset: bool = False
     done: bool = False
     tokens: int | None = None  # populated on the done chunk when known
+    tool_calls: list[ToolCall] | None = None
 
 
 class GatewayError(Exception):

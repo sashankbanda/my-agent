@@ -13,14 +13,14 @@ process lifetime; they are never logged.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import cast
+from typing import Any, cast
 
 import keyring
 from openai import APIError, APITimeoutError, AsyncOpenAI, OpenAIError
 from openai.types.chat import ChatCompletionMessageParam
 
 from myagent.gateway.registry import Registry
-from myagent.gateway.types import ChatMessage, ModelSpec, ProviderError
+from myagent.gateway.types import ChatMessage, ModelSpec, ProviderError, ToolCall
 from myagent.logging import get_logger
 
 log = get_logger(__name__)
@@ -68,51 +68,100 @@ class ProviderClientPool:
             )
         return self._clients[provider]
 
+    def _payload(self, messages: list[ChatMessage]) -> list[ChatCompletionMessageParam]:
+        """Convert our transcript to the wire format.
+
+        Roles are dynamic strings and tool-call shapes vary; the SDK's
+        TypedDict unions cannot express that, hence the cast (values are
+        shape-valid for every provider we support).
+        """
+        payload: list[dict[str, Any]] = []
+        for message in messages:
+            entry: dict[str, Any] = {"role": message.role, "content": message.content}
+            if message.tool_calls:
+                entry["tool_calls"] = [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {"name": call.name, "arguments": call.arguments},
+                    }
+                    for call in message.tool_calls
+                ]
+            if message.tool_call_id is not None:
+                entry["tool_call_id"] = message.tool_call_id
+            payload.append(entry)
+        return cast("list[ChatCompletionMessageParam]", payload)
+
     async def stream(
         self,
         spec: ModelSpec,
         messages: list[ChatMessage],
         usage_out: dict[str, int],
         max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_calls_out: list[ToolCall] | None = None,
     ) -> AsyncIterator[str]:
         """Stream text deltas for one completion.
 
         ``usage_out`` receives ``{"total_tokens": n}`` when the provider
         reports usage on its final stream chunk; callers fall back to an
-        estimate when it stays empty.
+        estimate when it stays empty. ``tool_calls_out``, when provided,
+        collects any tool calls the model requested (assembled from deltas).
         """
         client = self._client(spec.provider)
-        # Roles are dynamic strings from our transcript; the SDK's TypedDict
-        # unions cannot express that, hence the cast (values are shape-valid).
-        payload_messages = cast(
-            "list[ChatCompletionMessageParam]",
-            [{"role": m.role, "content": m.content} for m in messages],
-        )
+        payload_messages = self._payload(messages)
+        # Tool-call deltas arrive fragmented by index; assemble as we go.
+        partial: dict[int, dict[str, str]] = {}
+        request: dict[str, Any] = {
+            "model": spec.id,
+            "messages": payload_messages,
+            "stream": True,
+            "max_tokens": max_tokens,
+        }
+        if tools:
+            request["tools"] = tools
         try:
             try:
                 stream = await client.chat.completions.create(
-                    model=spec.id,
-                    messages=payload_messages,
-                    stream=True,
-                    stream_options={"include_usage": True},
-                    max_tokens=max_tokens,
+                    **request, stream_options={"include_usage": True}
                 )
             except APIError as exc:
                 # Quirk: some OpenAI-compatible endpoints reject stream_options.
                 if "stream_options" not in str(exc):
                     raise
-                stream = await client.chat.completions.create(
-                    model=spec.id,
-                    messages=payload_messages,
-                    stream=True,
-                    max_tokens=max_tokens,
-                )
+                stream = await client.chat.completions.create(**request)
             async for chunk in stream:
                 if chunk.usage is not None and chunk.usage.total_tokens is not None:
                     usage_out["total_tokens"] = chunk.usage.total_tokens
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    yield delta.content
+                for fragment in delta.tool_calls or []:
+                    slot = partial.setdefault(
+                        fragment.index, {"id": "", "name": "", "arguments": ""}
+                    )
+                    if fragment.id:
+                        slot["id"] = fragment.id
+                    if fragment.function is not None:
+                        if fragment.function.name:
+                            slot["name"] = fragment.function.name
+                        if fragment.function.arguments:
+                            slot["arguments"] += fragment.function.arguments
         except (APIError, APITimeoutError) as exc:
             raise ProviderError(spec.provider, str(exc)) from exc
         except OpenAIError as exc:
             raise ProviderError(spec.provider, f"unexpected SDK error: {exc}") from exc
+
+        if tool_calls_out is not None:
+            for index in sorted(partial):
+                slot = partial[index]
+                if slot["name"]:
+                    tool_calls_out.append(
+                        ToolCall(
+                            id=slot["id"] or f"call_{index}",
+                            name=slot["name"],
+                            arguments=slot["arguments"] or "{}",
+                        )
+                    )

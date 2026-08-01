@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from myagent.db import connection
 from myagent.events import EventType, append_event
@@ -36,6 +36,7 @@ from myagent.gateway.types import (
     ModelSpec,
     NoEligibleModelError,
     ProviderError,
+    ToolCall,
 )
 from myagent.logging import get_logger
 from myagent.tokens import estimate_tokens
@@ -52,6 +53,8 @@ class StreamingClient(Protocol):
         messages: list[ChatMessage],
         usage_out: dict[str, int],
         max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_calls_out: list[ToolCall] | None = None,
     ) -> AsyncIterator[str]: ...
 
 
@@ -106,9 +109,15 @@ class Gateway:
             )
             usage: dict[str, int] = {}
             emitted_text = ""
+            tool_calls: list[ToolCall] = []
             try:
                 async for delta in self._client.stream(
-                    spec, request.messages, usage, request.max_tokens
+                    spec,
+                    request.messages,
+                    usage,
+                    request.max_tokens,
+                    request.tools,
+                    tool_calls,
                 ):
                     emitted_text += delta
                     yield InferenceChunk(delta=delta, model_key=spec.key)
@@ -128,7 +137,12 @@ class Gateway:
             self._health.record_success(spec.provider)
             tokens = usage.get("total_tokens", estimate_tokens(emitted_text))
             self._quota.record_tokens(spec, tokens)
-            yield InferenceChunk(done=True, model_key=spec.key, tokens=tokens)
+            yield InferenceChunk(
+                done=True,
+                model_key=spec.key,
+                tokens=tokens,
+                tool_calls=tool_calls or None,
+            )
             return
 
         if attempted == 0:

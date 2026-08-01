@@ -31,29 +31,58 @@ from myagent.gateway.quota import QuotaGovernor
 from myagent.gateway.registry import load_registry
 from myagent.logging import get_logger
 from myagent.scheduler_lite import nightly_snapshots
-from myagent.server import chat, memory, voice_ws
+from myagent.security.broker import PermissionBroker
+from myagent.security.confirm import ConfirmationService
+from myagent.server import chat, memory, security, voice_ws
+from myagent.tools.executor import ToolExecutor
+from myagent.tools.registry import load_builtin_tools
 
 log = get_logger(__name__)
 
 UI_DIST = Path(__file__).resolve().parents[3] / "ui" / "dist"
 
 
-def build_loop(settings: Settings) -> AgentLoop:
-    """Production wiring: registry -> gateway -> loop, all on one database."""
+def build_kernel(settings: Settings) -> tuple[AgentLoop, PermissionBroker, ConfirmationService]:
+    """Production wiring: gateway + security + tools -> loop, one database.
+
+    Assembly order matters: tools must be registered before the loop is built
+    (it advertises their schemas), and the executor must exist before the loop
+    can act - a loop with tools but no broker is exactly what M4 forbids.
+    """
     db_path = settings.db_path()
-    registry = load_registry()
+    provider_registry = load_registry()
     gateway = Gateway(
-        registry=registry,
+        registry=provider_registry,
         quota=QuotaGovernor(db_path),
         health=HealthTracker(db_path),
-        client=ProviderClientPool(registry),
+        client=ProviderClientPool(provider_registry),
         db_path=db_path,
     )
-    return AgentLoop(gateway, db_path)
+    load_builtin_tools()
+    broker = PermissionBroker(db_path)
+    confirmations = ConfirmationService()
+    executor = ToolExecutor(db_path, settings, broker, confirmations)
+    loop = AgentLoop(
+        gateway,
+        db_path,
+        executor=executor,
+        max_steps=settings.tools.max_steps_per_turn,
+        max_seconds=settings.tools.max_turn_seconds,
+    )
+    return loop, broker, confirmations
 
 
-def create_app(settings: Settings, loop: AgentLoop | None = None) -> FastAPI:
-    """Build the FastAPI app for the given settings."""
+def create_app(
+    settings: Settings,
+    loop: AgentLoop | None = None,
+    broker: PermissionBroker | None = None,
+    confirmations: ConfirmationService | None = None,
+) -> FastAPI:
+    """Build the FastAPI app for the given settings.
+
+    Tests inject a pre-built loop (with a fake gateway) plus its broker and
+    confirmation service; production builds them from settings.
+    """
 
     @asynccontextmanager
     async def lifespan(app_: FastAPI) -> AsyncIterator[None]:
@@ -61,7 +90,15 @@ def create_app(settings: Settings, loop: AgentLoop | None = None) -> FastAPI:
         with connection(db_path) as conn:
             applied = migrate(conn)
             append_event(conn, EventType.APP_STARTED, {"version": myagent.__version__})
-        app_.state.loop = loop if loop is not None else build_loop(settings)
+        if loop is not None:
+            app_.state.loop = loop
+            app_.state.broker = broker or PermissionBroker(db_path)
+            app_.state.confirmations = confirmations or ConfirmationService()
+        else:
+            built_loop, built_broker, built_confirmations = build_kernel(settings)
+            app_.state.loop = built_loop
+            app_.state.broker = built_broker
+            app_.state.confirmations = built_confirmations
         snapshot_task = None
         if settings.vault.enabled:
             snapshot_task = asyncio.create_task(nightly_snapshots(settings, db_path))
@@ -78,6 +115,7 @@ def create_app(settings: Settings, loop: AgentLoop | None = None) -> FastAPI:
     app.include_router(chat.router)
     app.include_router(memory.router)
     app.include_router(voice_ws.router)
+    app.include_router(security.router)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

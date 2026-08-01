@@ -11,9 +11,16 @@ per model key:
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Any
 
 from myagent.gateway.registry import Registry
-from myagent.gateway.types import ChatMessage, ModelSpec, ProviderError, ProviderSpec
+from myagent.gateway.types import (
+    ChatMessage,
+    ModelSpec,
+    ProviderError,
+    ProviderSpec,
+    ToolCall,
+)
 
 Script = list[str] | ProviderError | tuple[str, int, list[str]]
 
@@ -31,6 +38,8 @@ class FakeClient:
         messages: list[ChatMessage],
         usage_out: dict[str, int],
         max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_calls_out: list[ToolCall] | None = None,
     ) -> AsyncIterator[str]:
         self.calls.append(spec.key)
         script = self.scripts[spec.key]
