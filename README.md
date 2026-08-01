@@ -4,10 +4,13 @@
 > autonomous personal assistant for Windows — designed to grow into a personal AI
 > operating system over several years.
 
-**Status:** Implementation in progress. The architecture is frozen at **v3**
-([docs/10-review-v3.md](docs/10-review-v3.md)) and all implementation follows the
+**Status:** Implementation in progress (M0–M4 complete). The architecture is frozen at
+**v3** ([docs/10-review-v3.md](docs/10-review-v3.md)) and all implementation follows the
 **[Implementation Playbook](docs/11-playbook.md)** — the single source of truth.
-Run it: `uv sync`, then `uv run python -m myagent` (see the `Justfile`).
+
+**▶ To run it, see the [RUNBOOK](RUNBOOK.md)** — every command, which terminal it goes
+in, and how to fix the usual problems. Short version: `uv run python -m myagent`, then
+open http://127.0.0.1:8765.
 
 > **Rev 2:** reasoning layer redesigned around free cloud APIs (Groq, Gemini,
 > OpenRouter) with local LLMs as optional emergency fallback; storage redesigned as
