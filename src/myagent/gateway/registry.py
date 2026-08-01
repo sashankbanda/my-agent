@@ -14,6 +14,9 @@ from typing import Any
 import yaml
 
 from myagent.gateway.types import ModelSpec, ProviderSpec, TaskClass
+from myagent.logging import get_logger
+
+log = get_logger(__name__)
 
 
 class RegistryError(Exception):
@@ -48,8 +51,16 @@ class Registry:
             raise RegistryError(f"unknown model key: {key}") from exc
 
     def candidates(self, task_class: TaskClass) -> list[ModelSpec]:
-        """Ranked candidate models for a task class (best first)."""
+        """Ranked candidate models for a task class (best first).
+
+        A class with no routing falls back to ``conversation`` rather than
+        failing the turn: an incomplete providers.yaml should degrade to the
+        general-purpose route, not break the assistant.
+        """
         keys = self._routing.get(task_class)
+        if not keys and task_class is not TaskClass.CONVERSATION:
+            log.warning("no_routing_for_task", task=task_class.value, using="conversation")
+            keys = self._routing.get(TaskClass.CONVERSATION)
         if not keys:
             raise RegistryError(f"no routing configured for task class: {task_class}")
         return [self._models[key] for key in keys]

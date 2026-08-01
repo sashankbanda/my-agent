@@ -20,6 +20,14 @@ providers:
   openrouter:
     base_url: https://openrouter.ai/api/v1
     api_key_ref: openrouter_api_key
+  # Local models via Ollama. local: true means (a) it costs nothing and needs
+  # no network, and (b) it is the ONLY tier allowed to see local_only prompts
+  # (secrets, credentials) - those never leave this machine.
+  # Install: uv run python scripts/setup_local_model.py
+  ollama:
+    base_url: http://127.0.0.1:11434/v1
+    api_key_ref: ollama_api_key  # unused by Ollama; any value works
+    local: true
 
 models:
   - provider: groq
@@ -67,17 +75,36 @@ models:
     trains_on_data: true
     quota: { rpm: 20, rpd: 50, tpm: 100000 }
 
+  # Runs on this machine: no tokens, no network, no data leaves the device.
+  # Quotas are nominal (there is no external limit) but keep the accounting
+  # uniform across providers.
+  - provider: ollama
+    id: qwen2.5:3b-instruct-q4_K_M
+    speed: medium
+    context: 32768
+    supports_tools: true
+    supports_vision: false
+    trains_on_data: false
+    quota: { rpm: 600, rpd: 100000, tpm: 1000000 }
+
 # Ranked candidate lists per task class. The gateway walks each list top-down,
 # skipping models that are quota-exhausted, cooling down, or privacy-excluded.
 routing:
-  triage:
+  # Easy turns: the local model first, cloud only if it is unavailable or its
+  # answer is unusable (see core/complexity.py for what counts as easy).
+  simple:
+    - ollama/qwen2.5:3b-instruct-q4_K_M
     - groq/llama-3.1-8b-instant
     - gemini/gemini-3.5-flash-lite
-    - openrouter/nvidia/nemotron-3-super-120b-a12b:free
+  triage:
+    - ollama/qwen2.5:3b-instruct-q4_K_M
+    - groq/llama-3.1-8b-instant
+    - gemini/gemini-3.5-flash-lite
   conversation:
     - groq/llama-3.3-70b-versatile
     - gemini/gemini-3.6-flash
     - openrouter/nvidia/nemotron-3-super-120b-a12b:free
+    - ollama/qwen2.5:3b-instruct-q4_K_M  # last resort: offline or all quotas gone
   planning:
     - gemini/gemini-3.6-flash
     - groq/llama-3.3-70b-versatile
@@ -89,6 +116,7 @@ routing:
     - gemini/gemini-3.6-flash
     - gemini/gemini-3.5-flash-lite
   background:
+    - ollama/qwen2.5:3b-instruct-q4_K_M  # never spend quota on background work
     - gemini/gemini-3.5-flash-lite
     - groq/llama-3.1-8b-instant
     - openrouter/nvidia/nemotron-3-super-120b-a12b:free

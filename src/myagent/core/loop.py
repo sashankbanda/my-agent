@@ -21,7 +21,7 @@ import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from myagent.core import fastpath, history
+from myagent.core import complexity, fastpath, history
 from myagent.db import connection
 from myagent.events import EventType, append_event
 from myagent.gateway.gateway import Gateway
@@ -81,6 +81,7 @@ class AgentLoop:
         max_steps: int = 12,
         max_seconds: float = 300.0,
         fast_path: bool = True,
+        local_tier: bool = True,
     ) -> None:
         self._gateway = gateway
         self._db_path = db_path
@@ -88,6 +89,7 @@ class AgentLoop:
         self._max_steps = max_steps
         self._max_seconds = max_seconds
         self._fast_path_enabled = fast_path
+        self._local_tier = local_tier
 
     @property
     def db_path(self) -> Path:
@@ -130,6 +132,15 @@ class AgentLoop:
         messages = list(bundle.messages)
         tool_schemas = registry.schemas() if self._executor is not None else None
 
+        # Easy turns run on the local model (no tokens, no network). If its
+        # answer is unusable the turn is retried on the cloud tier, so this is
+        # an optimization the user never has to think about.
+        routing = complexity.classify(user_text, history_depth=len(messages))
+        task_class = (
+            TaskClass.SIMPLE if (self._local_tier and routing.use_local) else TaskClass.CONVERSATION
+        )
+        local_attempt = task_class is TaskClass.SIMPLE
+
         answer = ""
         model_key: str | None = None
         tokens: int | None = None
@@ -144,7 +155,7 @@ class AgentLoop:
 
             request = InferenceRequest(
                 messages=messages,
-                task_class=TaskClass.CONVERSATION,
+                task_class=task_class,
                 privacy_class=(
                     bundle.privacy_class
                     if bundle.privacy_class is PrivacyClass.LOCAL_ONLY
@@ -175,6 +186,23 @@ class AgentLoop:
                     yield chunk
             finally:
                 await stream.aclose()  # release the provider connection
+
+            # The local model gets one chance: if its answer is unusable, redo
+            # the turn on the cloud tier rather than showing the user junk.
+            if local_attempt and not interrupted and not calls:
+                escalate, why = complexity.should_escalate(step_text)
+                if escalate:
+                    log.info("escalating_to_cloud", reason=why)
+                    self._emit(
+                        EventType.ESCALATED_TO_CLOUD,
+                        {"reason": why, "from": model_key},
+                        session_id,
+                    )
+                    yield InferenceChunk(reset=True, model_key=model_key or "local")
+                    answer = ""
+                    task_class = TaskClass.CONVERSATION
+                    local_attempt = False
+                    continue
 
             if interrupted or not calls or out_of_budget:
                 break

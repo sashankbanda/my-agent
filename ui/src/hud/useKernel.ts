@@ -35,7 +35,12 @@ export type Status = {
     tts_engine: string;
   };
   providers: ProviderStatus[];
-  savings: { local_today: number; model_calls_today: number };
+  savings: {
+    fast_path_today: number;
+    local_model_today: number;
+    free_today: number;
+    cloud_today: number;
+  };
   memory: { sessions: number; messages: number; facts: number };
   vault: { enabled: boolean; backend: string; last_snapshot: { created_at: string } | null };
   tools: { roots: string[] };

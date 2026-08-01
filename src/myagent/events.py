@@ -47,6 +47,7 @@ class EventType(StrEnum):
 
     # M4 - tools and permissions
     FAST_PATH_HANDLED = "FastPathHandled"  # answered locally, zero tokens
+    ESCALATED_TO_CLOUD = "EscalatedToCloud"  # local model's answer was not good enough
     TOOL_CALL_REQUESTED = "ToolCallRequested"
     TOOL_CALL_COMPLETED = "ToolCallCompleted"
     PERMISSION_DECIDED = "PermissionDecided"

@@ -43,10 +43,14 @@ function StatusBar({ status, online }: { status: Status | null; online: boolean 
           <span className="pill dim">stt: {status.voice.stt_engine}</span>
           <span className="pill dim">up {uptime}m</span>
           <span
-            className={status.savings.local_today > 0 ? "pill ok" : "pill dim"}
-            title="Simple commands answered locally today, with no model call"
+            className={status.savings.free_today > 0 ? "pill ok" : "pill dim"}
+            title={
+              `${status.savings.fast_path_today} answered with no model at all, ` +
+              `${status.savings.local_model_today} on the local model, ` +
+              `${status.savings.cloud_today} used cloud tokens`
+            }
           >
-            {status.savings.local_today} free · {status.savings.model_calls_today} model
+            {status.savings.free_today} free · {status.savings.cloud_today} cloud
           </span>
           {status.kill_switch && <span className="pill bad">STOPPED</span>}
         </>

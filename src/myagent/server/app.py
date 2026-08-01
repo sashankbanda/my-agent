@@ -30,6 +30,7 @@ from myagent.gateway.gateway import Gateway
 from myagent.gateway.health import HealthTracker
 from myagent.gateway.quota import QuotaGovernor
 from myagent.gateway.registry import load_registry
+from myagent.gateway.warmup import warm_local_models
 from myagent.logging import get_logger
 from myagent.scheduler_lite import nightly_snapshots
 from myagent.security.broker import PermissionBroker
@@ -70,6 +71,7 @@ def build_kernel(settings: Settings) -> tuple[AgentLoop, PermissionBroker, Confi
         max_steps=settings.tools.max_steps_per_turn,
         max_seconds=settings.tools.max_turn_seconds,
         fast_path=settings.tools.fast_path,
+        local_tier=settings.tools.local_tier,
     )
     return loop, broker, confirmations
 
@@ -107,10 +109,15 @@ def create_app(
         snapshot_task = None
         if settings.vault.enabled:
             snapshot_task = asyncio.create_task(nightly_snapshots(settings, db_path))
+        warm_task = None
+        if settings.tools.local_tier and loop is None:
+            # Load the on-device model now so the first easy question is fast.
+            warm_task = asyncio.create_task(warm_local_models(load_registry()))
         log.info("kernel_started", db=str(db_path), migrations_applied=applied)
         yield
-        if snapshot_task is not None:
-            snapshot_task.cancel()
+        for task in (snapshot_task, warm_task):
+            if task is not None:
+                task.cancel()
         with connection(db_path) as conn:
             append_event(conn, EventType.APP_STOPPING)
         log.info("kernel_stopping")

@@ -83,6 +83,9 @@ class ToolSettings(BaseModel):
     # Answer simple commands ("open chrome", "what's my battery") locally,
     # with no model call and no token cost. Set false to always use the model.
     fast_path: bool = True
+    # Send easy conversational turns to the local model (Ollama) instead of a
+    # cloud provider; unusable answers are retried on the cloud automatically.
+    local_tier: bool = True
 
 
 class Settings(BaseModel):

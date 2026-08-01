@@ -75,5 +75,8 @@ def make_registry(rpm: int = 100, rpd: int = 1000, tpm: int = 100_000) -> Regist
         models[spec.key] = spec
     from myagent.gateway.types import TaskClass
 
-    routing = {TaskClass.CONVERSATION: ["p1/m", "p2/m", "p3/m"]}
+    # Every task class routes to the same ranked list: these fakes exercise
+    # failover and quota, not model selection.
+    ranked = ["p1/m", "p2/m", "p3/m"]
+    routing = dict.fromkeys(TaskClass, ranked)
     return Registry(providers, models, routing)

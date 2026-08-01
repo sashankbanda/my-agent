@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 class TaskClass(StrEnum):
     """What kind of work an inference request is; drives routing."""
 
+    SIMPLE = "simple"  # easy enough for the local model
     TRIAGE = "triage"
     CONVERSATION = "conversation"
     PLANNING = "planning"

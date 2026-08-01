@@ -117,13 +117,23 @@ async def status(request: Request) -> dict[str, Any]:
         sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         facts = conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0]
-        # Turns answered locally today: model calls (and tokens) not spent.
-        saved = conn.execute(
+        # What today cost: work done on this machine (free) vs cloud tokens.
+        fast_path = conn.execute(
             "SELECT COUNT(*) FROM events WHERE type = ? AND ts >= date('now')",
             (EventType.FAST_PATH_HANDLED.value,),
         ).fetchone()[0]
-        llm_turns = conn.execute(
-            "SELECT COUNT(*) FROM events WHERE type = ? AND ts >= date('now')",
+        local_model = conn.execute(
+            """
+            SELECT COUNT(*) FROM events
+            WHERE type = ? AND ts >= date('now') AND data_json LIKE '%"model":"ollama/%'
+            """,
+            (EventType.INFERENCE_ROUTED.value,),
+        ).fetchone()[0]
+        cloud_calls = conn.execute(
+            """
+            SELECT COUNT(*) FROM events
+            WHERE type = ? AND ts >= date('now') AND data_json NOT LIKE '%"model":"ollama/%'
+            """,
             (EventType.INFERENCE_ROUTED.value,),
         ).fetchone()[0]
 
@@ -141,7 +151,12 @@ async def status(request: Request) -> dict[str, Any]:
             "tts_engine": voice_settings.tts.engine,
         },
         "providers": _provider_status(settings),
-        "savings": {"local_today": saved, "model_calls_today": llm_turns},
+        "savings": {
+            "fast_path_today": fast_path,
+            "local_model_today": local_model,
+            "free_today": fast_path + local_model,
+            "cloud_today": cloud_calls,
+        },
         "memory": {"sessions": sessions, "messages": messages, "facts": facts},
         "vault": {
             "enabled": settings.vault.enabled,

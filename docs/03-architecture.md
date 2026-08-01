@@ -170,8 +170,19 @@ flowchart TB
 
 ### 6.2 Routing policy (registry data — illustrative defaults, mid-2026)
 
+> **Rev 2.1 (2026-08):** the local model was promoted from "emergency
+> fallback" to a first-class routing tier. A complexity classifier
+> (`core/complexity.py`, no model call) sends easy turns to an on-device
+> qwen2.5-3b; unusable answers are automatically retried on the cloud. This
+> costs zero tokens for the majority of everyday turns, makes `local_only`
+> prompts answerable instead of refused, and keeps the assistant working when
+> free tiers are exhausted. A deterministic pattern layer
+> (`core/fastpath.py`) sits in front of both and answers mechanical commands
+> with no model at all.
+
 | Task class | Primary | Secondary | Tertiary | Emergency |
 |---|---|---|---|---|
+| Simple (classifier-selected) | **local qwen2.5-3b** | Groq small | Gemini Flash-Lite | — |
 | Triage / acknowledgments (latency-critical) | Groq (small fast model) | Gemini Flash-Lite | OpenRouter free small | local 4B |
 | Conversation | Groq 70B-class | Gemini Flash | OpenRouter free 70B-class | local |
 | Planning & tool calls (needs best function-calling) | Gemini Flash | Groq 70B-class | OpenRouter free | local |

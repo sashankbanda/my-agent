@@ -238,6 +238,34 @@ Permission behavior:
 
 ---
 
+## Three tiers: what runs where
+
+Every turn takes the cheapest route that can do the job well:
+
+| Tier | Handles | Cost | Speed |
+|---|---|---|---|
+| **Pattern** (no model) | "open chrome", "what's my battery", "remember that..." | free | 50–350 ms |
+| **Local model** (Ollama, on this laptop) | easy questions, chit-chat, short facts | free | ~1.5–3 s |
+| **Cloud** (Groq/Gemini/OpenRouter) | reasoning, code, planning, multi-step, tool chains | tokens | ~0.5–3 s |
+
+The local model is `qwen2.5:3b` (1.9 GB, CPU-only). It also covers two cases
+the cloud can't:
+
+- **Secrets never leave.** A prompt containing an API key or password is
+  routed to the local model *only* — previously it was refused outright.
+- **When cloud quotas run out** (or you're offline), the local model keeps the
+  assistant working instead of failing.
+
+If the local model gives a weak answer ("I'm not sure", empty, repetitive),
+the turn is automatically retried on the cloud — you never see the bad one.
+
+Set it up (one time): `uv run python scripts/setup_local_model.py --bench`
+Turn it off: `tools.local_tier: false` in [config/default.yaml](config/default.yaml)
+
+The HUD's status bar shows the split: "7 free · 5 cloud".
+
+---
+
 ## Free commands (no tokens spent)
 
 Simple requests are answered **locally** — no model call, no tokens, ~50–350 ms.
