@@ -69,6 +69,7 @@ def build_kernel(settings: Settings) -> tuple[AgentLoop, PermissionBroker, Confi
         executor=executor,
         max_steps=settings.tools.max_steps_per_turn,
         max_seconds=settings.tools.max_turn_seconds,
+        fast_path=settings.tools.fast_path,
     )
     return loop, broker, confirmations
 

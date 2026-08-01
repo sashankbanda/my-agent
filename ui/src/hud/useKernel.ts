@@ -35,6 +35,7 @@ export type Status = {
     tts_engine: string;
   };
   providers: ProviderStatus[];
+  savings: { local_today: number; model_calls_today: number };
   memory: { sessions: number; messages: number; facts: number };
   vault: { enabled: boolean; backend: string; last_snapshot: { created_at: string } | null };
   tools: { roots: string[] };
@@ -120,6 +121,11 @@ export function describeEvent(event: KernelEvent): { text: string; kind: string 
       return { text: `${tool}: you ${data.allowed ? "allowed" : "denied"} it`, kind: "perm" };
     case "InferenceRouted":
       return { text: `thinking via ${data.model}`, kind: "infer" };
+    case "FastPathHandled":
+      return {
+        text: `handled locally: ${data.intent}${data.tool ? ` → ${data.tool}` : ""} · 0 tokens`,
+        kind: "local",
+      };
     case "ProviderDegraded":
       return { text: `${data.provider} failed over: ${data.error}`, kind: "warn" };
     case "QuotaExhausted":

@@ -364,6 +364,11 @@ button.danger {
   color: var(--ok);
 }
 
+.feed-local {
+  color: #7ddba6;
+  font-weight: 600;
+}
+
 /* ---------- providers ---------- */
 
 .provider {

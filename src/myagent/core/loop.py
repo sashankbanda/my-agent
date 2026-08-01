@@ -21,7 +21,7 @@ import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from myagent.core import history
+from myagent.core import fastpath, history
 from myagent.db import connection
 from myagent.events import EventType, append_event
 from myagent.gateway.gateway import Gateway
@@ -65,6 +65,10 @@ BUDGET_PROMPT = (
 # rate-limit the whole conversation. Keep them small.
 MAX_OBSERVATION_CHARS = 4_000
 
+# Recorded as the "model" for locally-answered turns, so history and the HUD
+# make it obvious which replies cost nothing.
+FAST_PATH_MODEL = "local/fastpath"
+
 
 class AgentLoop:
     """Turn-by-turn conversation engine bound to one database and gateway."""
@@ -76,12 +80,14 @@ class AgentLoop:
         executor: ToolExecutor | None = None,
         max_steps: int = 12,
         max_seconds: float = 300.0,
+        fast_path: bool = True,
     ) -> None:
         self._gateway = gateway
         self._db_path = db_path
         self._executor = executor
         self._max_steps = max_steps
         self._max_seconds = max_seconds
+        self._fast_path_enabled = fast_path
 
     @property
     def db_path(self) -> Path:
@@ -110,6 +116,15 @@ class AgentLoop:
         history.append_message(self._db_path, session_id, "user", user_text)
         turn = TurnContext(session_id=session_id, channel=channel)
         deadline = time.monotonic() + self._max_seconds
+
+        # Simple commands are handled locally, without spending any tokens.
+        if self._fast_path_enabled:
+            handled = False
+            async for chunk in self._try_fast_path(session_id, user_text, turn):
+                handled = True
+                yield chunk
+            if handled:
+                return
 
         bundle = context.assemble(self._db_path, session_id, user_text, SYSTEM_PROMPT)
         messages = list(bundle.messages)
@@ -199,6 +214,43 @@ class AgentLoop:
             interrupted=interrupted,
             tainted=turn.tainted,
         )
+
+    async def _try_fast_path(
+        self, session_id: str, user_text: str, turn: TurnContext
+    ) -> AsyncIterator[InferenceChunk]:
+        """Answer a simple request locally, yielding nothing if it is not one.
+
+        Yields exactly the same chunk shape as a model turn, so the HUD, the
+        chat API, and the voice bridge need no special case.
+        """
+        intent = fastpath.match(user_text)
+        if intent is None:
+            return
+
+        if intent.tool is None:  # answerable with no tool at all
+            reply = intent.reply
+        else:
+            if self._executor is None:
+                return
+            result = await self._executor.execute(intent.tool, intent.args, turn)
+            if "error" in result:
+                # Let the model try to recover (suggest a name, ask a question)
+                # rather than dead-ending on a mechanical miss.
+                log.info("fast_path_fallback", intent=intent.name, error=result["error"])
+                return
+            reply = fastpath.format_reply(intent, result)
+
+        history.append_message(
+            self._db_path, session_id, "assistant", reply, provider="local", model=FAST_PATH_MODEL
+        )
+        self._emit(
+            EventType.FAST_PATH_HANDLED,
+            {"intent": intent.name, "tool": intent.tool, "tokens_saved": True},
+            session_id,
+        )
+        log.info("fast_path", intent=intent.name, tool=intent.tool)
+        yield InferenceChunk(delta=reply, model_key=FAST_PATH_MODEL)
+        yield InferenceChunk(done=True, model_key=FAST_PATH_MODEL, tokens=0)
 
     async def _run_tool(self, call: ToolCall, turn: TurnContext) -> dict[str, object]:
         """Execute one requested tool call through the executor (and broker)."""

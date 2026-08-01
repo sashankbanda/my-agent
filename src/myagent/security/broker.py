@@ -53,12 +53,18 @@ class KillSwitch:
         log.info("kill_switch_released")
 
 
+# One switch per process, shared by every broker instance. An emergency stop
+# that depended on which object you happened to hold would be a footgun: the
+# API, the executor, and the fast path must all see the same state.
+_PROCESS_KILL_SWITCH = KillSwitch()
+
+
 class PermissionBroker:
     """Authorizes tool calls against tiers, taint, channel, and grants."""
 
     def __init__(self, db_path: Path, kill_switch: KillSwitch | None = None) -> None:
         self._db_path = db_path
-        self.kill_switch = kill_switch or KillSwitch()
+        self.kill_switch = kill_switch or _PROCESS_KILL_SWITCH
 
     # -- grants -------------------------------------------------------------
 

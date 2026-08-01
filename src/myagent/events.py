@@ -46,6 +46,7 @@ class EventType(StrEnum):
     ASSISTANT_SAID = "AssistantSaid"
 
     # M4 - tools and permissions
+    FAST_PATH_HANDLED = "FastPathHandled"  # answered locally, zero tokens
     TOOL_CALL_REQUESTED = "ToolCallRequested"
     TOOL_CALL_COMPLETED = "ToolCallCompleted"
     PERMISSION_DECIDED = "PermissionDecided"

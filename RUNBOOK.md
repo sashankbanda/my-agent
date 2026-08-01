@@ -238,6 +238,36 @@ Permission behavior:
 
 ---
 
+## Free commands (no tokens spent)
+
+Simple requests are answered **locally** — no model call, no tokens, ~50–350 ms.
+The HUD's status bar shows the tally ("7 free · 0 model") and the activity feed
+marks them "handled locally · 0 tokens".
+
+Handled for free:
+
+| Say | What happens |
+|---|---|
+| "hi", "thanks", "ok" | canned reply |
+| "what time is it", "what's the date" | answered from the clock |
+| "open chrome", "open Premiere Pro" | launches the app |
+| "open youtube.com" | opens the browser |
+| "what's in my Downloads", "list Documents" | lists the folder |
+| "what's my battery", "check cpu", "disk space" | real system readings |
+| "what's running" | top processes |
+| "what apps can you open" | installed apps |
+| "remember that ..." | stores a fact |
+| "what do you remember about me" | lists your facts |
+
+Anything with reasoning, multiple steps, or conjunctions ("open chrome **and**
+search for X", "**why** is my battery draining") goes to the model as usual.
+Destructive things (delete, run a command) always go to the model **and** ask
+for confirmation — they are deliberately not fast-pathed.
+
+Turn it off with `tools.fast_path: false` in [config/default.yaml](config/default.yaml).
+
+---
+
 ## A note on free-tier quotas
 
 The HUD's provider panel shows today's usage per model. Those counters live in

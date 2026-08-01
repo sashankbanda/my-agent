@@ -103,7 +103,13 @@ def build(
 
         confirmations.add_notifier(auto)
     executor = ToolExecutor(scoped.db_path(), scoped, broker, confirmations)
-    loop = AgentLoop(gateway, scoped.db_path(), executor=executor, max_steps=max_steps)
+    loop = AgentLoop(
+        gateway,
+        scoped.db_path(),
+        executor=executor,
+        max_steps=max_steps,
+        fast_path=False,  # these tests drive the model's tool loop directly
+    )
     return loop, client
 
 

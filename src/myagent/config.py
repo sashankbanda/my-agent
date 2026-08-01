@@ -80,6 +80,9 @@ class ToolSettings(BaseModel):
     shell_timeout_seconds: int = 60
     max_steps_per_turn: int = 12  # bound on tool calls in one turn
     max_turn_seconds: int = 300
+    # Answer simple commands ("open chrome", "what's my battery") locally,
+    # with no model call and no token cost. Set false to always use the model.
+    fast_path: bool = True
 
 
 class Settings(BaseModel):

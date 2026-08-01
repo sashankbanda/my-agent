@@ -117,6 +117,15 @@ async def status(request: Request) -> dict[str, Any]:
         sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         facts = conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0]
+        # Turns answered locally today: model calls (and tokens) not spent.
+        saved = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE type = ? AND ts >= date('now')",
+            (EventType.FAST_PATH_HANDLED.value,),
+        ).fetchone()[0]
+        llm_turns = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE type = ? AND ts >= date('now')",
+            (EventType.INFERENCE_ROUTED.value,),
+        ).fetchone()[0]
 
     voice_settings = load_voice_settings()
     return {
@@ -132,6 +141,7 @@ async def status(request: Request) -> dict[str, Any]:
             "tts_engine": voice_settings.tts.engine,
         },
         "providers": _provider_status(settings),
+        "savings": {"local_today": saved, "model_calls_today": llm_turns},
         "memory": {"sessions": sessions, "messages": messages, "facts": facts},
         "vault": {
             "enabled": settings.vault.enabled,

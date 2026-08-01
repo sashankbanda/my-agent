@@ -51,7 +51,7 @@ def make_client(settings: Settings, sandbox: Path, turns: list) -> TestClient:
     broker = PermissionBroker(scoped.db_path())
     confirmations = ConfirmationService()
     executor = ToolExecutor(scoped.db_path(), scoped, broker, confirmations)
-    loop = AgentLoop(gateway, scoped.db_path(), executor=executor)
+    loop = AgentLoop(gateway, scoped.db_path(), executor=executor, fast_path=False)
     return TestClient(create_app(scoped, loop=loop, broker=broker, confirmations=confirmations))
 
 
@@ -101,7 +101,7 @@ def test_error_turn_emits_no_done(settings: Settings, sandbox: Path) -> None:
         client=FakeClient(scripts),
         db_path=scoped.db_path(),
     )
-    loop = AgentLoop(gateway, scoped.db_path())
+    loop = AgentLoop(gateway, scoped.db_path(), fast_path=False)
     with TestClient(create_app(scoped, loop=loop)) as client:
         events = events_of(client.post("/chat", json={"message": "hi"}).text)
     assert any("error" in event for event in events)

@@ -22,7 +22,8 @@ def build_loop(settings: Settings, scripts: dict[str, Script]) -> AgentLoop:
         client=FakeClient(scripts),
         db_path=settings.db_path(),
     )
-    return AgentLoop(gateway, settings.db_path())
+    # fast_path off: these tests are about the model turn lifecycle.
+    return AgentLoop(gateway, settings.db_path(), fast_path=False)
 
 
 async def drain(loop: AgentLoop, session: str, text: str) -> None:

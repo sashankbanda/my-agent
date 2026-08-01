@@ -6,7 +6,6 @@ import json
 from typing import Any
 
 from fastapi.testclient import TestClient
-from tests.fakes import FakeClient, Script, make_registry
 
 from myagent.config import Settings
 from myagent.core.loop import AgentLoop
@@ -15,6 +14,7 @@ from myagent.gateway.gateway import Gateway
 from myagent.gateway.health import HealthTracker
 from myagent.gateway.quota import QuotaGovernor
 from myagent.server.app import create_app
+from tests.fakes import FakeClient, Script, make_registry
 
 
 def make_client(settings: Settings, scripts: dict[str, Script]) -> TestClient:
@@ -28,7 +28,9 @@ def make_client(settings: Settings, scripts: dict[str, Script]) -> TestClient:
         client=FakeClient(scripts),
         db_path=settings.db_path(),
     )
-    loop = AgentLoop(gateway, settings.db_path())
+    # fast_path off: these tests exercise the model/streaming path, and the
+    # local shortcut would answer greetings before the gateway is reached.
+    loop = AgentLoop(gateway, settings.db_path(), fast_path=False)
     return TestClient(create_app(settings, loop=loop))
 
 

@@ -145,4 +145,4 @@ def load_builtin_tools() -> None:
     mechanism, so this is the only place that needs updating when a new tool
     module is added.
     """
-    from myagent.tools import apps, files, shell  # noqa: F401
+    from myagent.tools import apps, files, memory_tools, shell  # noqa: F401

@@ -42,6 +42,12 @@ function StatusBar({ status, online }: { status: Status | null; online: boolean 
           <span className="pill dim">wake: {status.voice.wake_word}</span>
           <span className="pill dim">stt: {status.voice.stt_engine}</span>
           <span className="pill dim">up {uptime}m</span>
+          <span
+            className={status.savings.local_today > 0 ? "pill ok" : "pill dim"}
+            title="Simple commands answered locally today, with no model call"
+          >
+            {status.savings.local_today} free · {status.savings.model_calls_today} model
+          </span>
           {status.kill_switch && <span className="pill bad">STOPPED</span>}
         </>
       )}

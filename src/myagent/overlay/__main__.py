@@ -31,7 +31,8 @@ log = get_logger(__name__)
 
 RECONNECT_DELAY_S = 2.0
 POLL_MS = 100
-TRANSPARENT_KEY = "#010203"  # a colour nothing else uses, punched out of the window
+TOPMOST_REASSERT_MS = 2000  # other apps steal always-on-top; take it back
+PLATE_COLOUR = "#12141c"
 
 # state -> (fill, outline, caption)
 STATE_STYLE: dict[str, tuple[str, str, str]] = {
@@ -90,10 +91,14 @@ class Overlay:
         self.root = tk.Tk()
         self.root.title("MyAgent")
         self.root.overrideredirect(True)  # no title bar
-        self.root.attributes("-topmost", True)
-        self.root.configure(bg=TRANSPARENT_KEY)
-        with contextlib.suppress(tk.TclError):  # unsupported on some setups
-            self.root.attributes("-transparentcolor", TRANSPARENT_KEY)
+        self.root.configure(bg=PLATE_COLOUR)
+        # Slight translucency reads as an overlay without risking invisibility:
+        # -transparentcolor on a borderless window rendered the whole orb
+        # unseeable on this machine, so the plate is drawn opaque instead.
+        with contextlib.suppress(tk.TclError):
+            self.root.attributes("-alpha", 0.94)
+        with contextlib.suppress(tk.TclError):  # keep it out of alt-tab
+            self.root.attributes("-toolwindow", True)
 
         self.width, self.height = 210, 78
         self._place(corner)
@@ -102,13 +107,13 @@ class Overlay:
             self.root,
             width=self.width,
             height=self.height,
-            bg=TRANSPARENT_KEY,
+            bg=PLATE_COLOUR,
             highlightthickness=0,
         )
         self.canvas.pack()
 
         # Rounded plate behind the orb so text stays readable on any wallpaper.
-        self._plate = self._rounded_rect(4, 4, self.width - 4, self.height - 4, 16, "#12141c")
+        self._plate = self._rounded_rect(2, 2, self.width - 2, self.height - 2, 16, PLATE_COLOUR)
         self._orb = self.canvas.create_oval(
             16, 19, 56, 59, fill="#22375c", outline="#35507f", width=2
         )
@@ -122,6 +127,7 @@ class Overlay:
         self._bind_interactions()
         self.client.start()
         self.root.after(POLL_MS, self._drain)
+        self._keep_on_top()
 
     # -- window helpers -----------------------------------------------------
 
@@ -137,6 +143,18 @@ class Overlay:
         }
         x, y = positions.get(corner, positions["bottom-right"])
         self.root.geometry(f"{self.width}x{self.height}+{x}+{y}")
+
+    def _keep_on_top(self) -> None:
+        """Re-assert always-on-top.
+
+        A single ``-topmost`` at startup loses to apps that later claim the
+        same flag (browsers going fullscreen, installers), which is how the
+        orb ends up hidden behind a maximized window.
+        """
+        with contextlib.suppress(tk.TclError):
+            self.root.attributes("-topmost", True)
+            self.root.lift()
+        self.root.after(TOPMOST_REASSERT_MS, self._keep_on_top)
 
     def _rounded_rect(self, x1: int, y1: int, x2: int, y2: int, radius: int, colour: str) -> int:
         """Canvas has no rounded rectangle; a smoothed polygon is the idiom."""

@@ -50,6 +50,16 @@ def isolated_keyring() -> Iterator[InMemoryKeyring]:
         keyring.set_keyring(previous)
 
 
+@pytest.fixture(autouse=True)
+def released_kill_switch() -> Iterator[None]:
+    """The kill switch is process-wide, so never let it leak between tests."""
+    from myagent.security.broker import _PROCESS_KILL_SWITCH
+
+    _PROCESS_KILL_SWITCH.release()
+    yield
+    _PROCESS_KILL_SWITCH.release()
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     """Settings pointing at a per-test data directory."""
