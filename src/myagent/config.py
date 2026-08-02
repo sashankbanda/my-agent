@@ -20,12 +20,21 @@ from pydantic import BaseModel, Field
 ENV_PREFIX = "MYAGENT_"
 ENV_NESTING_SEPARATOR = "__"
 
+# How long operational events (routing, provider health, voice state) are kept.
+# The security audit trail - permissions, tool calls, kill switch - is never
+# pruned; only the rows that exist to explain a bad afternoon are.
+DEFAULT_EVENT_RETENTION_DAYS = 14
+
 
 class AppSettings(BaseModel):
     """Identity and filesystem locations for the kernel."""
 
     name: str = "myagent"
     data_dir: Path | None = None
+    # Operational events (routing, provider health, voice state) are deleted
+    # after this many days. The security audit trail is never pruned. 0 keeps
+    # everything, which is fine until the database is a year old.
+    keep_event_days: int = DEFAULT_EVENT_RETENTION_DAYS
 
     def resolved_data_dir(self) -> Path:
         """Return the data directory, defaulting to %LOCALAPPDATA%/MyAgent."""

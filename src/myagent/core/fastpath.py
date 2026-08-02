@@ -137,6 +137,28 @@ def _too_complex(text: str) -> bool:
     return len(text) > MAX_FASTPATH_CHARS or any(marker in padded for marker in COMPLEXITY_MARKERS)
 
 
+# "open" and "list" start plenty of sentences that have nothing to do with
+# apps or folders - "open up about yourself", "list three ideas for dinner".
+# Those used to run a doomed tool call (which also scanned the Start Menu to
+# build its error message) before falling back to the model. A real app or
+# folder name is short and does not start with a pronoun or article.
+MAX_TARGET_WORDS = 3
+_NOT_TARGET_WORDS = (
+    "me you your yourself my mine that this it us them again over up about "
+    "how why what when who of the a an and or for to be do is are some any "
+    "something anything everything"
+)
+_NOT_A_TARGET = frozenset(_NOT_TARGET_WORDS.split())
+
+
+def _plausible_target(text: str) -> bool:
+    """True when this could name an application, file, or folder."""
+    words = text.split()
+    if not words or len(words) > MAX_TARGET_WORDS:
+        return False
+    return words[0].lower() not in _NOT_A_TARGET
+
+
 # Speech-to-text drops apostrophes and sometimes emits the curly U+2019 one,
 # so every contraction here tolerates all three spellings of "what's".
 # Missing this is why spoken questions fell through to the model.
@@ -278,7 +300,7 @@ def match(text: str) -> Intent | None:
         )
     if found := _LIST_DIR.match(stripped):
         target = found.group(1).strip().strip("\"'")
-        if target and not _looks_like_url(target):
+        if target and _plausible_target(target) and not _looks_like_url(target):
             return Intent(
                 name="list_dir",
                 tool="files.list_dir",
@@ -308,6 +330,8 @@ def match(text: str) -> Intent | None:
         if not target:
             return None
         site = SITES.get(target.lower().removesuffix(" website").removesuffix(" web"))
+        if site is None and not _plausible_target(target) and not _looks_like_url(target):
+            return None  # "open up about yourself" is not an application
         if site is not None:
             return Intent(
                 name="open_site", tool="apps.open_url", args={"url": site}, formatter="open_url"

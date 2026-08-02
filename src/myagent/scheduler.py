@@ -37,7 +37,7 @@ from croniter import CroniterBadCronError, croniter
 
 from myagent.config import Settings
 from myagent.db import connection
-from myagent.events import EventType, append_event
+from myagent.events import EventType, append_event, prune_events
 from myagent.logging import get_logger
 
 log = get_logger(__name__)
@@ -47,6 +47,9 @@ POLL_SECONDS = 30.0
 # asleep or off, and the moment has passed.
 MISFIRE_GRACE = timedelta(minutes=10)
 MAX_TASK_SECONDS = 600.0
+# Event housekeeping runs on the scheduler's clock; hourly is plenty for
+# something that deletes rows older than a week.
+PRUNE_EVERY_TICKS = 120
 TIMESTAMP = "%Y-%m-%dT%H:%M:%S"
 
 # Recognized by the runner and executed directly rather than sent to the
@@ -258,16 +261,34 @@ class Scheduler:
     async def run_forever(self, poll_seconds: float = POLL_SECONDS) -> None:
         """Poll until cancelled. One tick is one ``tick()``."""
         log.info("scheduler_started", poll_seconds=poll_seconds)
+        ticks = 0
         try:
             while True:
                 try:
                     await self.tick()
+                    if ticks % PRUNE_EVERY_TICKS == 0:
+                        await asyncio.to_thread(self._prune)
+                    ticks += 1
                 except Exception:
                     log.exception("scheduler_tick_failed")
                 await asyncio.sleep(poll_seconds)
         except asyncio.CancelledError:
             log.info("scheduler_stopped")
             raise
+
+    def _prune(self) -> None:
+        """Drop operational events that have aged out - never audit rows.
+
+        Housekeeping lives on the scheduler because it is the one thing in the
+        system that already owns a clock.
+        """
+        keep_days = self._settings.app.keep_event_days if self._settings else 0
+        if keep_days <= 0:
+            return
+        with connection(self._db_path) as conn:
+            removed = prune_events(conn, keep_days)
+        if removed:
+            log.info("events_pruned", removed=removed, keep_days=keep_days)
 
     async def tick(self, now: datetime | None = None) -> list[int]:
         """Run everything due; returns the ids started this tick."""

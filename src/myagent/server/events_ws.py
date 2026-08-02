@@ -22,7 +22,7 @@ import myagent
 from myagent.bus import broadcaster
 from myagent.config import Settings
 from myagent.db import connection
-from myagent.events import EventType, append_event
+from myagent.events import EventType, publish_transient
 from myagent.gateway.health import HealthTracker
 from myagent.gateway.quota import QuotaGovernor
 from myagent.gateway.registry import RegistryError, load_registry
@@ -170,13 +170,14 @@ async def status(request: Request) -> dict[str, Any]:
 
 
 def publish_state(app: Any, state: str, db_path: Path) -> None:
-    """Record and broadcast the assistant's current state.
+    """Broadcast the assistant's current state to every attached UI.
 
-    Held on the kernel (not in the voice process) so every attached UI agrees
-    on one authoritative state.
+    Held on the kernel (not in the voice process) so all UIs agree on one
+    authoritative state, and *not* written to the database: which colour the
+    orb is right now is a state, not a fact worth auditing. It is also
+    available from ``/status`` for a UI that connects mid-turn.
     """
     if getattr(app.state, "voice_state", None) == state:
         return  # no event storm from repeated identical states
     app.state.voice_state = state
-    with connection(db_path) as conn:
-        append_event(conn, EventType.VOICE_STATE, {"state": state})
+    publish_transient(EventType.VOICE_STATE, {"state": state})

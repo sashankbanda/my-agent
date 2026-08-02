@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 import webbrowser
 from typing import Any
 
@@ -210,6 +211,27 @@ def list_processes(context: ToolContext, limit: int = 15) -> dict[str, Any]:
 
 
 GPU_COUNTER_TIMEOUT_S = 12
+# psutil measures CPU over an interval. Blocking for one costs that long on
+# every status check - including "what's my battery", which never looks at the
+# CPU figure. In a long-running process there is a better option: ask for the
+# average since the *previous* call, which is free. Primed at import so the
+# first real call has a baseline to measure from.
+MIN_CPU_SAMPLE_S = 0.15
+_last_cpu_reading = 0.0
+psutil.cpu_percent(interval=None)
+
+
+def cpu_percent() -> float:
+    """Current CPU load, without blocking when a recent baseline exists."""
+    global _last_cpu_reading
+    now = time.monotonic()
+    elapsed = now - _last_cpu_reading
+    _last_cpu_reading = now
+    # Two calls in quick succession would measure a meaninglessly short slice,
+    # so those (and the very first) take a real, short sample.
+    if elapsed < MIN_CPU_SAMPLE_S:
+        return float(psutil.cpu_percent(interval=MIN_CPU_SAMPLE_S))
+    return float(psutil.cpu_percent(interval=None))
 
 
 def gpu_usage() -> dict[str, Any] | None:
@@ -276,7 +298,7 @@ def system_status(context: ToolContext, include_gpu: bool = False) -> dict[str, 
     disk = psutil.disk_usage(os.environ.get("SYSTEMDRIVE", "C:") + "\\")
     battery = psutil.sensors_battery()
     return {
-        "cpu_percent": psutil.cpu_percent(interval=0.3),
+        "cpu_percent": round(cpu_percent(), 1),
         "cpu_count": psutil.cpu_count(logical=True),
         "gpu": gpu_usage() if include_gpu else None,
         "memory": {

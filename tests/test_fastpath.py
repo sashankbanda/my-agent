@@ -444,3 +444,57 @@ class TestTimePhrasings:
         assert intent is not None
         assert intent.tool is None  # no tool, no model, no chance to hallucinate
         assert datetime.now().astimezone().strftime("%p") in intent.reply
+
+
+class TestTargetPlausibility:
+    """ "Open" and "list" begin plenty of sentences about nothing openable.
+
+    Each one used to run a doomed tool call - which also scanned the Start
+    Menu to build its error message - before falling back to the model.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "open up about yourself",
+            "open your mind",
+            "start over",
+            "start again please",
+            "run that by me again",
+            "run a diagnostic",
+            "list three ideas for dinner",
+            "list of prime numbers",
+            "show me a good recipe",
+            "show me how to tie a tie",
+        ],
+    )
+    def test_sentences_are_not_mistaken_for_targets(self, text: str) -> None:
+        intent = fastpath.match(text)
+        assert intent is None or intent.tool is None, f"{text!r} would run a doomed tool call"
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("open chrome", "open"),
+            ("open premiere pro", "open"),
+            ("open visual studio code", "open"),
+            ("open file explorer", "open"),
+            ("launch my downloads folder", "open"),
+            ("open youtube", "open_site"),
+            ("open youtube.com", "open_url"),
+            ("what's in my downloads", "list_dir"),
+            ("list Documents", "list_dir"),
+            ("show me Downloads", "list_dir"),
+        ],
+    )
+    def test_real_targets_still_match(self, text: str, expected: str) -> None:
+        intent = fastpath.match(text)
+        assert intent is not None, f"{text!r} must still be free"
+        assert intent.name == expected
+
+    def test_the_guard_itself(self) -> None:
+        assert fastpath._plausible_target("chrome") is True
+        assert fastpath._plausible_target("visual studio code") is True
+        assert fastpath._plausible_target("your mind") is False
+        assert fastpath._plausible_target("three ideas for dinner") is False
+        assert fastpath._plausible_target("") is False

@@ -292,3 +292,33 @@ class TestGpuUsage:
         """Against the live machine: a plausible reading, or an honest None."""
         reading = apps.gpu_usage()
         assert reading is None or 0.0 <= reading["percent"] <= 100.0
+
+
+class TestStatusLatency:
+    """ "What's my battery" should not pay for a CPU measurement.
+
+    psutil samples CPU over an interval; blocking for one cost 300ms on every
+    status check, which was most of the latency of the most common question
+    in the system - and the battery formatter never reads the CPU figure.
+    """
+
+    def test_repeated_calls_do_not_block(self, context: ToolContext) -> None:
+        import time
+
+        apps.system_status(context)  # prime the baseline
+        time.sleep(0.2)
+        start = time.perf_counter()
+        apps.system_status(context)
+        elapsed = time.perf_counter() - start
+
+        assert elapsed < 0.1, f"status took {elapsed * 1000:.0f}ms; it used to be 300ms"
+
+    def test_the_reading_is_still_a_real_percentage(self, context: ToolContext) -> None:
+        value = apps.system_status(context)["cpu_percent"]
+        assert isinstance(value, float)
+        assert 0.0 <= value <= 100.0
+
+    def test_back_to_back_calls_still_sample(self, context: ToolContext) -> None:
+        """Two calls in the same instant would measure a meaningless slice."""
+        apps.system_status(context)
+        assert 0.0 <= apps.system_status(context)["cpu_percent"] <= 100.0

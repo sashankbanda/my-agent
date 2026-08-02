@@ -80,8 +80,25 @@ class TestComplexityRouting:
         assert routing.use_local is False
         assert "tool" in routing.reason
 
-    def test_deep_conversations_go_to_the_cloud(self) -> None:
-        assert complexity.classify("and then?", history_depth=40).use_local is False
+    def test_a_long_chat_does_not_disable_the_local_tier(self) -> None:
+        """Regression: every turn in an established chat went to the cloud.
+
+        Routing judged "conversation length" by the session's lifetime message
+        count, but memory assembly caps the prompt at a few thousand
+        characters however long the chat runs. So after about six exchanges
+        the local tier switched itself off and "who wrote Hamlet" started
+        costing cloud tokens. It is the size of the actual prompt that matters.
+        """
+        typical_context_after_a_long_chat = 2_000
+        for question in ("who wrote hamlet", "tell me a joke", "what does CPU stand for"):
+            routing = complexity.classify(question, context_chars=typical_context_after_a_long_chat)
+            assert routing.use_local is True, f"{question!r} should still run on-device"
+
+    def test_a_genuinely_huge_prompt_goes_to_the_cloud(self) -> None:
+        """The rule the broken one was trying to be."""
+        routing = complexity.classify("and then?", context_chars=20_000)
+        assert routing.use_local is False
+        assert routing.reason == "large context"
 
 
 class TestEscalation:

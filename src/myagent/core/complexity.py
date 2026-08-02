@@ -105,9 +105,13 @@ ACTION_MARKERS = (
     " show ",
     " list ",
     " find ",
+    " find out ",
     " search ",
     " look up ",
+    " look for ",
     " google ",
+    " research ",
+    " browse ",
     " send ",
     " remind ",
     " set ",
@@ -147,6 +151,10 @@ MATH_PATTERN = re.compile(r"\d+\s*[-+*/^]\s*\d+|\b(integral|derivative|equation|
 
 SHORT_TURN_CHARS = 160
 MANY_CLAUSES = 3
+# Memory assembly caps the transcript well below this (facts 600 + retrieved
+# 800 + recent 2400 + prompt), so this only trips when the prompt is genuinely
+# unusual, not merely because the chat has been going a while.
+MAX_LOCAL_CONTEXT_CHARS = 6_000
 
 
 @dataclass
@@ -158,8 +166,16 @@ class Routing:
     needs_tool: bool = False  # the turn cannot be answered without acting
 
 
-def classify(text: str, has_tool_history: bool = False, history_depth: int = 0) -> Routing:
-    """Decide whether the local model can handle this turn."""
+def classify(text: str, has_tool_history: bool = False, context_chars: int = 0) -> Routing:
+    """Decide whether the local model can handle this turn.
+
+    ``context_chars`` is the size of the transcript that will actually be sent,
+    not the length of the conversation. Those differ: memory assembly caps
+    context at a few thousand characters however long the chat gets, so a
+    hundred-message session does not produce a hundred-message prompt. Judging
+    by message count instead switched the local tier off entirely after about
+    six exchanges - every "who wrote Hamlet" went to a cloud provider.
+    """
     stripped = text.strip()
     lowered = f" {stripped.lower()} "
 
@@ -183,9 +199,10 @@ def classify(text: str, has_tool_history: bool = False, history_depth: int = 0) 
         return Routing(False, "maths")
     if stripped.count(",") >= MANY_CLAUSES:
         return Routing(False, "many clauses")
-    if history_depth > 12:
-        # Long conversations carry context a small model handles poorly.
-        return Routing(False, "long conversation")
+    if context_chars > MAX_LOCAL_CONTEXT_CHARS:
+        # Genuinely large prompts (many recalled facts, long retrieved
+        # history) are where a 3B starts losing the thread.
+        return Routing(False, "large context")
     return Routing(True, "simple request")
 
 

@@ -188,24 +188,34 @@ class AgentLoop:
 
         tool_schemas = registry.schemas() if self._executor is not None else None
 
+        # Assemble first, then route on the transcript that will actually be
+        # sent. Judging by conversation length instead is what silently
+        # disabled the local tier in any chat past a few exchanges.
+        bundle = context.assemble(
+            self._db_path, session_id, user_text, build_system_prompt(channel)
+        )
+        messages = list(bundle.messages)
+
         # Easy turns run on the local model (no tokens, no network). If its
         # answer is unusable the turn is retried on the cloud tier, so this is
         # an optimization the user never has to think about.
         routing = complexity.classify(
-            user_text, history_depth=history.count_messages(self._db_path, session_id)
+            user_text, context_chars=sum(len(message.content) for message in messages)
         )
         task_class = (
             TaskClass.SIMPLE if (self._local_tier and routing.use_local) else TaskClass.CONVERSATION
         )
         local_attempt = task_class is TaskClass.SIMPLE
-
-        bundle = context.assemble(
-            self._db_path,
+        if local_attempt:
+            # The small model needs a tighter brevity cap than the cloud one.
+            messages[0] = ChatMessage(
+                role="system", content=build_system_prompt(channel, local_model=True)
+            )
+        self._emit(
+            EventType.INFERENCE_TIER,
+            {"local": local_attempt, "reason": routing.reason},
             session_id,
-            user_text,
-            build_system_prompt(channel, local_model=local_attempt),
         )
-        messages = list(bundle.messages)
 
         answer = ""
         model_key: str | None = None
