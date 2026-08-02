@@ -39,7 +39,7 @@ wake:
   # compares them to your phrase, so it costs ~100-300 ms of CPU per burst
   # where the built-in models cost almost nothing. In exchange you can say
   # anything - and "hey ev what's the time" wakes it AND asks, in one breath.
-  phrase: null
+  phrase: hey friday
   # How close the transcription must be (0-1). Speech-to-text mangles short
   # phrases, so lower this if your wake word gets missed, raise it if ordinary
   # conversation keeps triggering it.

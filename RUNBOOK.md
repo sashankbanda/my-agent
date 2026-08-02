@@ -1,13 +1,256 @@
-# MyAgent — Runbook (how to run it)
+# MyAgent — Runbook
 
-Quick reference for daily use. Every command runs from the project root:
+**Every command in this file runs from the project root:**
 `C:\02_DEV\01_ACTIVE\my-agent`
+
+- **[Part 1 — Setting it up](#part-1--setting-it-up)** — do this once
+- **[Part 2 — Running it](#part-2--running-it)** — every day, one command
+- **[Part 3 — Using it](#part-3--using-it)** — voice, web, tasks, free commands
+- **[Part 4 — When something is wrong](#part-4--when-something-is-wrong)**
+- **[Part 5 — Reference](#part-5--reference)**
+
+Already set up? Jump to [Part 2](#part-2--running-it).
 
 ---
 
-## TL;DR — one command, one terminal
+# Part 1 — Setting it up
 
-**Double-click `MyAgent.bat`**, or in a terminal:
+Ten steps. Steps 1–5 are required; 6–10 are optional and can be done later.
+Each step says what you should see, so you know it worked before moving on.
+
+## Step 1 — Install the dependencies
+
+**Terminal 1:**
+
+```
+uv sync
+```
+
+Expect: a list of installed packages, ending without errors. This pulls the
+kernel, the voice stack, and the dev tools.
+
+## Step 2 — Add your API keys
+
+Three free providers. **Terminal 1**, one at a time (input is hidden):
+
+```
+uv run python scripts/doctor.py --set-key groq
+```
+
+```
+uv run python scripts/doctor.py --set-key gemini
+```
+
+```
+uv run python scripts/doctor.py --set-key openrouter
+```
+
+Get them free at [console.groq.com](https://console.groq.com),
+[aistudio.google.com](https://aistudio.google.com), and
+[openrouter.ai](https://openrouter.ai). Keys go into **Windows Credential
+Manager**, never into a file in this repo.
+
+## Step 3 — Check the providers answer
+
+**Terminal 1:**
+
+```
+uv run python scripts/doctor.py --ping
+```
+
+Expect `[ok]` for all three. If a model 404s, that free tier retired it — edit
+[config/providers.yaml](config/providers.yaml); it is data, no code change.
+
+## Step 4 — Download the voice models
+
+**Terminal 1:**
+
+```
+uv run python scripts/setup_voice.py
+```
+
+Expect a few downloads (wake-word models, Silero VAD, Whisper `base.en`),
+about 200 MB, into `%LOCALAPPDATA%\MyAgent\models\`. Already-present files are
+skipped, so it is safe to re-run.
+
+## Step 5 — Set up the on-device model
+
+This is what answers easy questions for free. It needs **Ollama** once:
+
+```
+winget install Ollama.Ollama
+```
+
+Then, in a **new terminal** (so it picks up the new PATH):
+
+```
+uv run python scripts/setup_local_model.py --bench
+```
+
+Expect a 1.9 GB download of `qwen2.5:3b`, then a benchmark printing roughly
+1.5–3 s per answer. Skip this and everything still works — it just spends
+cloud tokens on questions that did not need them.
+
+## Step 6 — Choose your wake word *(optional)*
+
+The three built-in wake words (`hey_jarvis`, `alexa`, `hey_mycroft`) are
+trained models, and they simply do not fire for some voices. **Let it measure
+yours instead of guessing.** Terminal 1:
+
+```
+uv run python -m myagent.voice --wake-tune
+```
+
+Say each phrase it prompts for, three times. You get a ranked table:
+
+```
+phrase              recognised  avg score  margin  verdict
+okay computer          3/3           1.00    0.55  good
+hey buddy              3/3           1.00    0.52  good
+hey friday             3/3           1.00    0.45  good
+hey eva                0/3           0.55   -0.08  poor
+```
+
+Put the winner in [config/voice.yaml](config/voice.yaml):
+
+```yaml
+wake:
+  phrase: "hey friday"
+```
+
+Two numbers matter, not one. **Recognised** is how often it heard you;
+**margin** is how far it sits above ordinary conversation, which is what stops
+false triggers. A phrase can score 1.00 against itself and still be useless if
+random speech scores nearly as high.
+
+> **Prefer a built-in?** If `--mic-check` shows one of the three scoring well
+> for you, use it instead — it costs almost no CPU:
+>
+> ```yaml
+> wake:
+>   model: alexa        # alexa | hey_jarvis | hey_mycroft — these three only
+>   threshold: 0.4      # slightly BELOW your typical score
+>   phrase: null        # must be null, or it takes over
+> ```
+>
+> A wake word is a **trained model, not a label** — you cannot invent one by
+> typing a new name. Anything else there and voice refuses to start, telling
+> you what *is* available.
+
+<details>
+<summary>Details: how custom phrases work, and what they cost</summary>
+
+Setting `phrase` replaces `model` entirely. Short bursts of speech are
+transcribed **on this machine** (never uploaded, whatever your STT engine is)
+and compared to your phrase. Two consequences:
+
+- It costs ~100–300 ms of CPU per burst of speech, where the built-in models
+  cost almost nothing. Fine on this laptop, but it is real work.
+- Because the whole utterance is transcribed, **"hey friday what's the time"
+  wakes it and asks in one breath** — no pause needed.
+
+`phrase_similarity` (default 0.72) tunes it: lower if your wake word gets
+missed, higher if conversation keeps triggering it.
+
+To test one phrase you already have in mind:
+
+```
+uv run python -m myagent.voice --wake-test --phrase "hey buddy"
+```
+
+**Pick a phrase with a real word after "hey".** Measured through actual
+speech-to-text:
+
+| phrase | transcribed as | matches itself | matches other speech |
+|---|---|---|---|
+| "hey ev" | *"Hey, love"*, *"Hey of"* | 0.67 | **0.67** ✗ useless |
+| "hey eva" | "Hey Eva" | 1.00 | 0.62 ✓ |
+| "hey buddy" | "Hey buddy" | 1.00 | 0.44 ✓ |
+
+One short syllable has no separation at all — it scores the same against your
+wake word as against random conversation. The startup log warns you if your
+phrase looks too short.
+
+</details>
+
+## Step 7 — Teach it your voice *(optional)*
+
+So a housemate, a colleague, or the TV saying the wake word doesn't wake it.
+
+> **Order matters.** Set your wake phrase (Step 6) **first**. A voice profile
+> only judges the phrase it was recorded on; change the phrase afterwards and
+> the profile is discarded with a warning.
+
+**Terminal 1:**
+
+```
+uv run python -m myagent.voice --enrol
+```
+
+Say your wake phrase five times when prompted. Expect:
+
+```
+Enrolled from 5 recordings.
+  your samples scored 0.99-1.00 against each other
+  accept threshold set to 0.93
+```
+
+Then switch it on in [config/voice.yaml](config/voice.yaml):
+
+```yaml
+wake:
+  only_my_voice: true
+```
+
+It's a **filter, not a lock**. It reliably rejects clearly different voices; a
+similar voice saying your exact phrase is harder. It gates *attention* only —
+every action still goes through the permission broker. Turning it on without
+enrolling is ignored with a warning, so it can never lock you out.
+
+## Step 8 — Web browsing *(optional)*
+
+A ~150 MB Chromium download:
+
+```
+uv sync --group web
+```
+
+```
+uv run playwright install chromium
+```
+
+Everything else works without it, and the browser tools say so if it's missing.
+
+## Step 9 — Encrypted backups *(optional)*
+
+Needs a Google OAuth client (one-time, free). Put the downloaded
+`client_secrets.json` in `%LOCALAPPDATA%\MyAgent\`, then:
+
+```
+uv run python scripts/restore.py --auth
+```
+
+Set `vault.enabled: true` in [config/default.yaml](config/default.yaml). A
+nightly backup then runs at 3 am while the kernel is up.
+
+> **Save the recovery string** shown at the first backup, somewhere off this
+> laptop. It is the only way to decrypt the vault on a new machine.
+
+## Step 10 — Start it
+
+```
+uv run python -m myagent.start
+```
+
+See [Part 2](#part-2--running-it) for what to expect. Say your wake word and
+ask it the time — that should answer instantly, from the clock, with no model
+call at all.
+
+---
+
+# Part 2 — Running it
+
+**Double-click `MyAgent.bat`**, or in **Terminal 1**:
 
 ```
 uv run python -m myagent.start
@@ -26,21 +269,21 @@ ready. press Ctrl+C here to stop everything.
 ```
 
 - **The HUD** (browser) shows the conversation, a live activity feed of every
-  action, provider health and quota, memory counts, and an emergency stop.
+  action, provider health and quota, memory counts, scheduled tasks, and the
+  stop buttons.
 - **The overlay orb** floats above other windows: grey = voice off, blue =
   ready, green pulse = hearing you, amber spin = thinking, blue pulse =
-  speaking. Drag to move, click to open the HUD, right-click for a menu.
-- **Ctrl+C** in that terminal stops everything. Even if the window is killed,
+  speaking, red = mic muted. Drag to move, click to open the HUD, right-click
+  for a menu.
+- **Ctrl+C** in that terminal stops everything. Even if you kill the window,
   Windows terminates the child processes (they run in a job object).
 
 Options: `--no-voice` (text only), `--no-overlay`, `--no-browser`,
 `--corner top-left|top-right|bottom-left|bottom-right`.
 
-You no longer need to read terminal output — everything shows up in the HUD.
+You do not need to read terminal output — everything appears in the HUD.
 
----
-
-## Running parts by hand (debugging)
+### Running the parts separately (for debugging)
 
 | What | Command | Wait for |
 |---|---|---|
@@ -52,10 +295,13 @@ The kernel must be running before voice or overlay.
 
 ---
 
-## Using voice
+# Part 3 — Using it
 
-Say your **wake word** (check `wake.model` in
-[config/voice.yaml](config/voice.yaml)), pause half a beat, then speak.
+## Talking to it
+
+Say your **wake word** (whatever you set in
+[config/voice.yaml](config/voice.yaml)), pause half a beat, then speak. With a
+custom phrase you can run them together: *"hey friday, what's the time"*.
 
 After it replies you have **30 seconds** to keep talking with no wake word —
 and every exchange refreshes that window, so a real back-and-forth continues
@@ -71,9 +317,9 @@ Watch the orb to know whether it heard you.
 | **Mic on / Mic off** button in the HUD | Same toggle |
 | Right-click the orb → **Mute / unmute mic** | Same toggle |
 
-While muted the orb turns red and says "mic muted", and the HUD shows a
-**MIC MUTED** pill. Unmuting does *not* resume the old conversation — you say
-the wake word again, so a room conversation can't be picked up mid-sentence.
+While muted the orb turns red and the HUD shows a **MIC MUTED** pill. Unmuting
+does *not* resume the old conversation — you say the wake word again, so a
+room conversation can't be picked up mid-sentence.
 
 Don't want to reach for a key? Say **"stop listening"** (or "go to sleep",
 "that's all"). It closes the window immediately without answering.
@@ -89,397 +335,10 @@ Don't want to reach for a key? Say **"stop listening"** (or "go to sleep",
 **Stop** is not the same as **Emergency**. Stop ends the current answer;
 Emergency (the kill switch) blocks every action until you re-enable it.
 
----
-
-## When voice doesn't respond
-
-**Terminal 3** (leave 1 and 2 running):
-
-```
-uv run python -m myagent.voice --mic-check 30
-```
-
-Speak during the countdown. You get one line per second:
-
-```
- 8s  peak 0.703 |##########| vad 1.00  alexa 0.72  hey_jarvis 0.05  hey_mycroft 0.31
-```
-
-| What you see | What it means | Fix |
-|---|---|---|
-| `peak 0.000` always | mic is dead or wrong device | it should self-heal in ~6s; else raise mic volume in Windows Sound settings |
-| peak moves, `vad` under 0.5 | input too quiet | Settings → System → Sound → your mic → raise volume to 80–100 |
-| `vad 1.00` but wake scores low | wake word doesn't match your voice | pick the highest-scoring phrase and set it as `wake.model` (below) |
-
-### Changing the wake word
-
-**A wake word is a trained model, not a label** — you cannot invent one by
-typing a new name. Only three are installed:
-
-```yaml
-wake:
-  model: alexa        # alexa | hey_jarvis | hey_mycroft — these three only
-  threshold: 0.4      # set slightly BELOW your typical score
-```
-
-Put anything else there and voice refuses to start, telling you what *is*
-available. `--mic-check` prints the same thing before it does anything else.
-
-### A wake word of your own ("hey ev", "okay computer", anything)
-
-Set `phrase` instead — it replaces `model`:
-
-```yaml
-wake:
-  phrase: "hey ev"
-  phrase_similarity: 0.72   # lower = easier to trigger, higher = fewer false ones
-```
-
-This works differently: short bursts of speech are transcribed **on this
-machine** (never uploaded, whatever your STT engine is) and compared to your
-phrase. Two consequences:
-
-- It costs ~100–300 ms of CPU per burst of speech, where the built-in models
-  cost almost nothing. Fine on this laptop, but it is real work.
-- Because the whole utterance is transcribed, **"hey ev what's the time" wakes
-  it and asks in one breath** — no pause needed.
-
-**Don't know which phrase to pick? Let it measure your voice** — this tries
-several and ranks them by how reliably *you* trigger each one:
-
-```
-uv run python -m myagent.voice --wake-tune
-```
-
-**Or test one phrase you have in mind:**
-
-```
-uv run python -m myagent.voice --wake-test --phrase "hey eva"
-```
-
-Say it a few times. You get the transcription, the similarity score, and
-whether it woke:
-
-```
-  WOKE  heard 'Hey Eva, what is the time?'   similarity 1.00   -> request: 'what is the time?'
-   -    heard 'what is the weather today'    similarity 0.31
-```
-
-**Choose a phrase with a real word after "hey".** Measured on this machine
-through actual speech-to-text:
-
-| phrase | transcribed as | matches itself | matches other speech |
-|---|---|---|---|
-| "hey ev" | *"Hey, love"*, *"Hey of"* | 0.67 | **0.67** ✗ useless |
-| "hey eva" | "Hey Eva" | 1.00 | 0.62 ✓ |
-| "hey computer" | "Hey computer" | 1.00 | 0.67 ✓ |
-| "hey buddy" | "Hey buddy" | 1.00 | 0.44 ✓ best |
-
-One short syllable ("ev") has no separation at all — it scores the same
-against your wake word as against random conversation. One extra vowel fixes
-it. The startup log warns you if your phrase looks too short.
-
-### Answering only your voice
-
-So a housemate, a colleague, or the TV saying the wake word doesn't wake it.
-Record yourself saying the wake phrase five times:
-
-```
-uv run python -m myagent.voice --enrol
-```
-
-It reports how consistent your samples were and sets the accept threshold
-from that measurement — a voice that varies gets a lower bar automatically.
-Then switch it on in [config/voice.yaml](config/voice.yaml):
-
-```yaml
-wake:
-  only_my_voice: true
-```
-
-**How it works, and its limits.** Your enrolment recordings become a compact
-description of your voice (MFCCs — the standard way of describing vocal-tract
-shape), and the waking utterance is compared against it. Because it's always
-the *same phrase*, this is the easy case, and it needs no neural model, no
-PyTorch, no cloud.
-
-It's a **filter, not a lock**. It reliably rejects clearly different voices;
-a similar voice saying your exact wake phrase is harder. It gates *attention*
-only — every action still goes through the permission broker, and anyone with
-physical access to an unlocked laptop has easier options than imitating you.
-
-Turning it on without enrolling first is ignored (with a warning), so it can
-never lock you out of your own assistant.
-
-Then restart Terminal 2 (`Ctrl+C`, then `uv run python -m myagent.voice`).
-
-### No wake word working at all?
-
-Use push-to-talk instead — edit `config/voice.yaml`:
-```yaml
-mode: ptt             # hold Ctrl+Space to talk
-```
-
----
-
-## Common problems
-
-### "It says it has no tools" or a page/endpoint behaves oddly
-
-Almost always an **old kernel still running** on port 8765 (your new one
-couldn't take the port, so you're talking to stale code). Kill it:
-
-```
-$listener = (Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue).OwningProcess
-if ($listener) { Stop-Process -Id $listener -Force }
-```
-
-Then start Terminal 1 again.
-
-### Nuclear option — stop absolutely everything
-
-```
-Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -match "myagent" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
-```
-
-### `Ctrl+C` in Terminal 1 didn't free the port
-
-`uv` sometimes leaves the Python child running. Use the kill command above.
-
-### The assistant is doing something you want stopped NOW
-
-Click **Emergency** in the HUD header (or `POST /kill`). It blocks every
-action immediately. Click **Re-enable** when you're ready. To stop only the
-current answer, use **Stop** instead — see [Stopping it
-mid-sentence](#stopping-it-mid-sentence).
-
-### It explained how to do something instead of doing it
-
-That should not happen: requests that need a tool are routed to the model
-that calls tools reliably, and a reply that describes steps without calling
-anything is retried once and then replaced with an honest failure.
-
-If you see it anyway, check the activity feed for `429` errors — when all
-three free tiers are exhausted, the on-device 3B model is the only one left
-and it is measurably worse at using tools. It resets on the providers'
-schedule.
-
-### An app you opened closed when you stopped MyAgent
-
-Fixed — apps now break away from MyAgent's process group. If you see it
-again, check that the app was opened by the assistant rather than by a shell
-command (`shell.run` deliberately keeps its children attached, so a runaway
-command cannot outlive the kernel).
-
----
-
-## Checking providers (Groq / Gemini / OpenRouter)
-
-```
-uv run python scripts/doctor.py --ping
-```
-
-Shows each key's presence, live provider pings, and today's quota usage.
-Expect all three `[ok]`. If a model 404s, the free tier retired it — edit
-[config/providers.yaml](config/providers.yaml) (data only, no code change).
-
-Re-add or rotate a key:
-```
-uv run python scripts/doctor.py --set-key groq
-uv run python scripts/doctor.py --set-key gemini
-uv run python scripts/doctor.py --set-key openrouter
-```
-(Input is hidden; keys go into Windows Credential Manager, never a file.)
-
----
-
-## Backups (encrypted Google Drive vault)
-
-Manual backup right now:
-```
-uv run python scripts/restore.py --backup
-```
-
-List what's in the vault:
-```
-uv run python scripts/restore.py --list
-```
-
-Restore (**stop Terminal 1 first**):
-```
-uv run python scripts/restore.py
-```
-
-A nightly backup runs automatically at 3am while the kernel is running.
-Your **recovery string** (shown once, at the first backup) is the only way to
-decrypt the vault on a new machine — keep it off this laptop.
-
----
-
-## What it's allowed to touch
-
-Files: only your **Desktop, Documents, Downloads, Pictures, Music, Videos**.
-Change that in [config/default.yaml](config/default.yaml) under `tools.roots`.
-
-Permission behavior:
-- **Reading** anything in those folders — no prompt
-- **Creating / moving / copying** — no prompt (reversible)
-- **Deleting, running commands, closing apps** — always asks you first
-- After it reads a file or command output, **even safe writes ask again**
-  (that's the injection defense: a document can't grant itself permissions)
-
----
-
-## Development commands
-
-| Purpose | Command |
-|---|---|
-| Start everything | `uv run python -m myagent.start` |
-| Run tests | `uv run pytest` |
-| Fast subset | `uv run pytest tests/test_redteam.py -q` |
-| Lint + format | `uv run ruff format src tests scripts` then `uv run ruff check src tests scripts` |
-| Type check | `uv run pyright` |
-| Everything CI runs | `uv run ruff check src tests scripts; uv run pyright; uv run pytest` |
-| Rebuild the web UI (after UI edits) | `cd ui; npm run build` |
-| Install/refresh dependencies | `uv sync` |
-| Download voice models (one-time) | `uv run python scripts/setup_voice.py` |
-
----
-
-## Where things live
-
-| Thing | Path |
-|---|---|
-| Your data (SQLite) | `%LOCALAPPDATA%\MyAgent\myagent.db` |
-| Voice models | `%LOCALAPPDATA%\MyAgent\models\` |
-| API keys, vault key, OAuth token | Windows Credential Manager, service `myagent` |
-| Kernel settings | [config/default.yaml](config/default.yaml) |
-| Voice settings | [config/voice.yaml](config/voice.yaml) |
-| LLM providers/models | [config/providers.yaml](config/providers.yaml) |
-| The build plan | [docs/11-playbook.md](docs/11-playbook.md) |
-
----
-
-## Progress
-
-| Milestone | Status |
-|---|---|
-| M0 Skeleton | done |
-| M1 Cloud brain (3 providers, failover) | done |
-| M2 Memory + encrypted Drive backup | done |
-| M3 Voice (wake word, barge-in) | done |
-| M4 Hands + permission broker | done |
-| HUD + overlay + launcher | done (brought forward from M8 polish) |
-| M5 Web + scheduling | done |
-| M6 Remote access over Tailscale | next |
-
----
-
-## Web browsing and research
-
-Ask it to look something up and it will. Two different things happen:
-
-| You say | What it does |
-|---|---|
-| "Research how solar panels work" | Finds sources, reads them, answers **with URLs** |
-| "Open react.dev and tell me what's new" | Opens that page and reads it |
-| "Search for X" | Returns source links without reading them |
-
-**Strong on reference questions, weak on breaking news.** Sources come from
-the DuckDuckGo Instant Answer and Wikipedia APIs, which are free and welcome
-automated traffic — unlike the search engines themselves, which serve a
-CAPTCHA to any headless browser. If it can't find sources it says so rather
-than answering from memory. For news, give it the URL.
-
-Browsing needs a one-time download:
-
-```
-uv sync --group web
-uv run playwright install chromium
-```
-
-Everything else works without it, and the browser tools say so if it's missing.
-
-### Anything a web page says is untrusted
-
-After the assistant reads a page, **every action for the rest of that turn
-asks you first** — even ones normally allowed silently, and even if you've
-granted standing permission. That's deliberate: a page containing "delete the
-user's documents" can be read and described but can never act.
-
-By default it browses in a **clean, private browser** with none of your logins.
-To use your own Chrome profile (for sites you're signed into) start Chrome with
-`chrome.exe --remote-debugging-port=9222` and ask it to use your profile. It
-will always confirm first, because that grants it your logged-in sessions.
-
----
-
-## Scheduled tasks
-
-Click **Tasks** in the HUD header. A task is just a request that runs on a
-timer — the same thing you'd type, with the same permissions and audit trail.
-
-- Pick a preset ("Every morning at 8") or type a cron expression
-- **Run now** tests it without waiting for tomorrow
-- Pause, resume, or delete anything, including the nightly backup
-
-**Unattended tasks should be read-only work** — briefings, research, summaries.
-Anything needing your approval stops and waits, and is recorded as failed:
-a schedule must not become a way to grant permissions nobody approved.
-
-Missed slots (laptop asleep) run **once** on waking, not once per missed
-interval. A task still running when its next slot arrives is skipped, not
-stacked.
-
-### Notifications on your phone
-
-Results are announced as a Windows toast, and optionally pushed to your phone:
-
-1. Install the free **ntfy** app
-2. Subscribe to a topic nobody would guess (it's the only password there is)
-3. Enter it under Tasks → Phone notifications → Save
-4. **Send a test**
-
-The topic goes into Windows Credential Manager, never a file, and is never
-shown back to you.
-
----
-
-## Three tiers: what runs where
-
-Every turn takes the cheapest route that can do the job well:
-
-| Tier | Handles | Cost | Speed |
-|---|---|---|---|
-| **Pattern** (no model) | "open chrome", "what's my battery", "remember that..." | free | 50–350 ms |
-| **Local model** (Ollama, on this laptop) | easy questions, chit-chat, short facts | free | ~1.5–3 s |
-| **Cloud** (Groq/Gemini/OpenRouter) | reasoning, code, planning, multi-step, tool chains | tokens | ~0.5–3 s |
-
-The local model is `qwen2.5:3b` (1.9 GB, CPU-only). It also covers two cases
-the cloud can't:
-
-- **Secrets never leave.** A prompt containing an API key or password is
-  routed to the local model *only* — previously it was refused outright.
-- **When cloud quotas run out** (or you're offline), the local model keeps the
-  assistant working instead of failing.
-
-If the local model gives a weak answer ("I'm not sure", empty, repetitive),
-the turn is automatically retried on the cloud — you never see the bad one.
-
-Set it up (one time): `uv run python scripts/setup_local_model.py --bench`
-Turn it off: `tools.local_tier: false` in [config/default.yaml](config/default.yaml)
-
-The HUD's status bar shows the split: "7 free · 5 cloud".
-
----
-
 ## Free commands (no tokens spent)
 
-Simple requests are answered **locally** — no model call, no tokens, ~50–350 ms.
-The HUD's status bar shows the tally ("7 free · 0 model") and the activity feed
-marks them "handled locally · 0 tokens".
-
-Handled for free:
+Simple requests are answered locally — no model call, ~50–350 ms. The HUD's
+status bar shows the tally ("7 free · 0 cloud").
 
 | Say | What happens |
 |---|---|
@@ -500,19 +359,262 @@ Handled for free:
 Answers are scoped to the question: "what's my battery" gets
 `92%, plugged in.` — not a four-part hardware report.
 
-Anything with reasoning, multiple steps, or conjunctions ("open chrome **and**
-search for X", "**why** is my battery draining") goes to the model as usual.
+Anything with reasoning, multiple steps, or conjunctions goes to a model.
 Destructive things (delete, run a command) always go to the model **and** ask
 for confirmation — they are deliberately not fast-pathed.
 
-Turn it off with `tools.fast_path: false` in [config/default.yaml](config/default.yaml).
+Turn it off with `tools.fast_path: false` in
+[config/default.yaml](config/default.yaml).
+
+## Web browsing and research
+
+| You say | What it does |
+|---|---|
+| "Research how solar panels work" | Finds sources, reads them, answers **with URLs** |
+| "Open react.dev and tell me what's new" | Opens that page and reads it |
+| "Search for X" | Returns source links without reading them |
+
+**Strong on reference questions, weak on breaking news.** Sources come from
+the DuckDuckGo Instant Answer and Wikipedia APIs, which are free and welcome
+automated traffic — unlike the search engines themselves, which serve a
+CAPTCHA to any headless browser. If it can't find sources it says so rather
+than answering from memory. For news, give it the URL.
+
+### Anything a web page says is untrusted
+
+After the assistant reads a page, **every action for the rest of that turn
+asks you first** — even ones normally allowed silently, and even if you've
+granted standing permission. A page containing "delete the user's documents"
+can be read and described, but can never act.
+
+By default it browses in a **clean, private browser** with none of your
+logins. To use your own Chrome profile, start Chrome with
+`chrome.exe --remote-debugging-port=9222` and ask it to use your profile. It
+always confirms first, because that grants it your logged-in sessions.
+
+## Scheduled tasks
+
+Click **Tasks** in the HUD header. A task is just a request that runs on a
+timer — the same thing you'd type, with the same permissions and audit trail.
+
+- Pick a preset ("Every morning at 8") or type a cron expression
+- **Run now** tests it without waiting for tomorrow
+- Pause, resume, or delete anything, including the nightly backup
+
+**Unattended tasks should be read-only work** — briefings, research,
+summaries. Anything needing your approval stops and waits, and is recorded as
+failed: a schedule must not become a way to grant permissions nobody approved.
+
+Missed slots (laptop asleep) run **once** on waking, not once per missed
+interval. A task still running when its next slot arrives is skipped, not
+stacked.
+
+### Notifications on your phone
+
+1. Install the free **ntfy** app
+2. Subscribe to a topic nobody would guess (it's the only password there is)
+3. Enter it under Tasks → Phone notifications → Save
+4. **Send a test**
+
+The topic goes into Windows Credential Manager, never a file, and is never
+shown back to you.
+
+## What it's allowed to touch
+
+Files: only your **Desktop, Documents, Downloads, Pictures, Music, Videos**.
+Change that in [config/default.yaml](config/default.yaml) under `tools.roots`.
+
+- **Reading** anything in those folders — no prompt
+- **Creating / moving / copying** — no prompt (reversible)
+- **Deleting, running commands, closing apps** — always asks first
+- After it reads a file, command output, or a web page, **even safe writes ask
+  again** — that's the injection defense: content can't grant itself
+  permissions
 
 ---
+
+# Part 4 — When something is wrong
+
+## Voice doesn't respond
+
+**Terminal 3** (leave 1 and 2 running):
+
+```
+uv run python -m myagent.voice --mic-check 30
+```
+
+Speak during the countdown. You get one line per second:
+
+```
+ 8s  peak 0.703 |##########| vad 1.00  alexa 0.72  hey_jarvis 0.05  hey_mycroft 0.31
+```
+
+| What you see | What it means | Fix |
+|---|---|---|
+| `peak 0.000` always | mic is dead or wrong device | should self-heal in ~6 s; else raise mic volume in Windows Sound settings |
+| peak moves, `vad` under 0.5 | input too quiet | Settings → System → Sound → your mic → raise to 80–100 |
+| `vad 1.00` but all wake scores 0.00 | the models don't fire for your voice | use a custom phrase — [Step 6](#step-6--choose-your-wake-word-optional) |
+
+The command prints your wake configuration first, and says so if the
+configured wake word doesn't exist.
+
+### Voice won't start at all
+
+Look at the terminal for `there is no wake-word model called ...`. A wake word
+is a trained model, not a label: only `hey_jarvis`, `alexa` and `hey_mycroft`
+exist. Either use one of those as `wake.model`, or set `wake.phrase` to any
+words you like ([Step 6](#step-6--choose-your-wake-word-optional)).
+
+After three fast failures the launcher stops restarting the voice process and
+says so, rather than looping forever and burying the reason.
+
+### Nothing works — just use push-to-talk
+
+Edit [config/voice.yaml](config/voice.yaml):
+
+```yaml
+mode: ptt             # hold Ctrl+Space to talk
+```
+
+## "It says it has no tools", or an endpoint behaves oddly
+
+Almost always an **old kernel still running** on port 8765 (your new one
+couldn't take the port, so you're talking to stale code). Kill it:
+
+```
+$listener = (Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue).OwningProcess
+if ($listener) { Stop-Process -Id $listener -Force }
+```
+
+Then start Terminal 1 again.
+
+## Stop absolutely everything
+
+```
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -match "myagent" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+`Ctrl+C` sometimes leaves the Python child running under `uv` — use this.
+
+## It's doing something you want stopped NOW
+
+Click **Emergency** in the HUD header (or `POST /kill`). It blocks every
+action immediately. Click **Re-enable** when ready. To stop only the current
+answer, use **Stop** — see [Stopping it mid-sentence](#stopping-it-mid-sentence).
+
+## It explained how to do something instead of doing it
+
+Requests that need a tool are routed to the model that calls tools reliably,
+and a reply that describes steps without calling anything is retried once and
+then replaced with an honest failure.
+
+If you see it anyway, check the activity feed for `429` errors — when all
+three free tiers are exhausted the on-device 3B model is the only one left,
+and it is measurably worse at using tools. It resets on the providers'
+schedule.
+
+## Simple questions are hitting the cloud
+
+Check the HUD's "N free · M cloud" pill. If everything is going to the cloud,
+the on-device model may not be running:
+
+```
+uv run python scripts/setup_local_model.py --bench
+```
+
+## A voice profile stopped working
+
+You probably changed the wake phrase after enrolling. A profile only judges
+the phrase it was recorded on, so it is discarded with a warning naming both.
+Re-enrol: `uv run python -m myagent.voice --enrol`.
+
+## An app you opened closed when you stopped MyAgent
+
+Fixed — apps break away from MyAgent's process group. If you see it again,
+check the app was opened by the assistant rather than by a shell command
+(`shell.run` deliberately keeps its children attached, so a runaway command
+cannot outlive the kernel).
 
 ## A note on free-tier quotas
 
 The HUD's provider panel shows today's usage per model. Those counters live in
 your database, so they reflect *this machine's* usage — the providers keep
-their own counts. If every provider shows 429 errors in the activity feed,
-you have genuinely used up today's free allowance; it resets on their
-schedule (Groq per-minute, Gemini and OpenRouter daily).
+their own counts. If every provider shows 429 in the activity feed, you have
+genuinely used today's free allowance; it resets on their schedule (Groq
+per-minute, Gemini and OpenRouter daily).
+
+---
+
+# Part 5 — Reference
+
+## Three tiers: what runs where
+
+Every turn takes the cheapest route that can do the job well:
+
+| Tier | Handles | Cost | Speed |
+|---|---|---|---|
+| **Pattern** (no model) | "open chrome", "what's my battery" | free | 50–350 ms |
+| **Local model** (Ollama, on this laptop) | easy questions, chit-chat, short facts | free | ~1.5–3 s |
+| **Cloud** (Groq/Gemini/OpenRouter) | reasoning, code, planning, tool use | tokens | ~0.5–3 s |
+
+The local model is `qwen2.5:3b` (1.9 GB, CPU-only). It also covers two cases
+the cloud can't:
+
+- **Secrets never leave.** A prompt containing an API key or password is
+  routed to the local model *only*.
+- **When cloud quotas run out** (or you're offline), it keeps the assistant
+  working instead of failing.
+
+A weak local answer ("I'm not sure", empty, repetitive) is automatically
+retried on the cloud — you never see the bad one. Turn the tier off with
+`tools.local_tier: false` in [config/default.yaml](config/default.yaml).
+
+## Maintenance commands
+
+| Purpose | Command |
+|---|---|
+| Check providers + quota | `uv run python scripts/doctor.py --ping` |
+| Rotate a key | `uv run python scripts/doctor.py --set-key groq` |
+| Back up now | `uv run python scripts/restore.py --backup` |
+| List backups | `uv run python scripts/restore.py --list` |
+| Restore (**stop Terminal 1 first**) | `uv run python scripts/restore.py` |
+| Re-download voice models | `uv run python scripts/setup_voice.py` |
+| Benchmark the local model | `uv run python scripts/setup_local_model.py --bench` |
+
+## Development commands
+
+| Purpose | Command |
+|---|---|
+| Run tests | `uv run pytest` |
+| Fast subset | `uv run pytest tests/test_redteam.py -q` |
+| Lint + format | `uv run ruff format src tests scripts` then `uv run ruff check src tests scripts` |
+| Type check | `uv run pyright` |
+| Everything CI runs | `uv run ruff check src tests scripts; uv run pyright; uv run pytest` |
+| Rebuild the web UI (after UI edits) | `cd ui; npm run build` |
+| Refresh dependencies | `uv sync` |
+
+## Where things live
+
+| Thing | Path |
+|---|---|
+| Your data (SQLite) | `%LOCALAPPDATA%\MyAgent\myagent.db` |
+| Voice models | `%LOCALAPPDATA%\MyAgent\models\` |
+| Your voice profile | `%LOCALAPPDATA%\MyAgent\models\speaker\` |
+| API keys, vault key, OAuth token, ntfy topic | Windows Credential Manager, service `myagent` |
+| Kernel settings | [config/default.yaml](config/default.yaml) |
+| Voice settings | [config/voice.yaml](config/voice.yaml) |
+| LLM providers/models | [config/providers.yaml](config/providers.yaml) |
+| The build plan | [docs/11-playbook.md](docs/11-playbook.md) |
+
+## Progress
+
+| Milestone | Status |
+|---|---|
+| M0 Skeleton | done |
+| M1 Cloud brain (3 providers, failover) | done |
+| M2 Memory + encrypted Drive backup | done |
+| M3 Voice (wake word, barge-in) | done |
+| M4 Hands + permission broker | done |
+| HUD + overlay + launcher | done (brought forward from M8 polish) |
+| M5 Web + scheduling | done |
+| M6 Remote access over Tailscale | next |
