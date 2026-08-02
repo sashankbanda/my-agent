@@ -142,3 +142,77 @@ class TestProfileStorage:
         (tmp_path / "owner.json").write_text("{not json", encoding="utf-8")
 
         assert speaker.VoiceProfile.load(tmp_path / "owner") is None
+
+
+def _stub_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Build a Pipeline without audio hardware, models, or a keyboard hook."""
+    from myagent.voice.pipeline import Pipeline
+
+    class _Phrase:
+        phrase = "stub"
+
+    monkeypatch.setattr(Pipeline, "_open_audio", lambda self, probe: None)
+    monkeypatch.setattr(Pipeline, "_install_mute_hotkey", lambda self: None)
+    for attribute in ("SileroVad", "SpeechSegmenter", "Transcriber"):
+        monkeypatch.setattr(f"myagent.voice.pipeline.{attribute}", lambda *a, **k: object())
+    monkeypatch.setattr("myagent.voice.pipeline.PhraseWake", lambda *a, **k: _Phrase())
+    monkeypatch.setattr("myagent.voice.pipeline.create_synthesizer", lambda *a, **k: object())
+
+
+class TestProfileIsTiedToThePhrase:
+    """Verification compares recordings of the SAME words.
+
+    A profile enrolled on "hey jarvis" cannot judge someone saying "hey
+    friday" - it would reject the owner. Changing the wake phrase therefore
+    invalidates the profile, and the safe response is to stop verifying, not
+    to lock the owner out of their own assistant.
+    """
+
+    def test_the_profile_records_what_it_was_enrolled_on(self, tmp_path: Path) -> None:
+        profile = speaker.enrol([another_take(DAVID, seed) for seed in range(4)], "hey jarvis")
+        profile.save(tmp_path / "owner")
+
+        loaded = speaker.VoiceProfile.load(tmp_path / "owner")
+        assert loaded is not None
+        assert loaded.phrase == "hey jarvis"
+
+    def test_a_stale_profile_is_dropped_not_enforced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The owner changed their wake phrase; they must not be locked out."""
+        from myagent.voice.config import VoiceSettings
+        from myagent.voice.pipeline import Pipeline
+
+        speaker.enrol([another_take(DAVID, seed) for seed in range(4)], "hey jarvis").save(
+            speaker.profile_path(tmp_path)
+        )
+
+        _stub_pipeline(monkeypatch)
+
+        settings = VoiceSettings(mode="wake")
+        settings.wake.phrase = "hey friday"  # changed since enrolling
+        settings.wake.only_my_voice = True
+        settings.models_dir = tmp_path
+
+        pipeline = Pipeline(settings)
+
+        assert pipeline.voice_profile is None, "a stale profile must not reject the owner"
+
+    def test_a_matching_profile_is_kept(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from myagent.voice.config import VoiceSettings
+        from myagent.voice.pipeline import Pipeline
+
+        speaker.enrol([another_take(DAVID, seed) for seed in range(4)], "hey friday").save(
+            speaker.profile_path(tmp_path)
+        )
+
+        _stub_pipeline(monkeypatch)
+
+        settings = VoiceSettings(mode="wake")
+        settings.wake.phrase = "hey friday"
+        settings.wake.only_my_voice = True
+        settings.models_dir = tmp_path
+
+        assert Pipeline(settings).voice_profile is not None

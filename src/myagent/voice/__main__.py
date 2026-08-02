@@ -302,6 +302,12 @@ def enrol_voice(samples: int) -> None:
     settings = load_voice_settings()
     models_dir = settings.resolved_models_dir()
     phrase = settings.wake.phrase or settings.wake.model.replace("_", " ")
+    # Verification compares recordings of the same words, so the profile is
+    # tied to the phrase. Enrolling first and changing the wake phrase after
+    # would quietly invalidate it, so say the order out loud.
+    print(f'Enrolling for the wake phrase currently configured: "{phrase}"')
+    print("If you plan to change it, change it FIRST - a profile only judges")
+    print("the phrase it was recorded on.\n")
     device: str | int | None = settings.input_device
     if device is None:
         device = probe_live_input()

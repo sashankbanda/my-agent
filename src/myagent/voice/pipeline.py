@@ -116,6 +116,27 @@ class Pipeline:
                 why="no enrolled voice",
                 fix="uv run python -m myagent.voice --enrol",
             )
+        # Verification is text-dependent: it compares recordings of the SAME
+        # words. A profile enrolled on "hey jarvis" cannot judge someone
+        # saying "hey friday" - it would reject the owner. Changing the wake
+        # phrase therefore invalidates the profile, and the safe response is
+        # to stop verifying rather than to lock the owner out.
+        active_phrase = settings.wake.phrase or settings.wake.model.replace("_", " ")
+        stale = (
+            self.voice_profile is not None
+            and self.voice_profile.phrase
+            and self.voice_profile.phrase != active_phrase
+        )
+        if stale:
+            assert self.voice_profile is not None
+            log.warning(
+                "voice_profile_stale",
+                enrolled_for=self.voice_profile.phrase,
+                wake_phrase=active_phrase,
+                why="a voice profile only judges the phrase it was recorded on",
+                fix="uv run python -m myagent.voice --enrol",
+            )
+            self.voice_profile = None
         if settings.mode == "wake":
             if settings.wake.phrase:
                 self.phrase_wake = PhraseWake(settings.wake.phrase, settings.wake.phrase_similarity)
