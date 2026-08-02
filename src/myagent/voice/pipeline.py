@@ -56,7 +56,7 @@ from myagent.voice.config import FRAME_SAMPLES, SAMPLE_RATE, VoiceSettings
 from myagent.voice.stt import Transcriber
 from myagent.voice.tts import create_synthesizer
 from myagent.voice.vad import SileroVad, SpeechSegmenter
-from myagent.voice.wake import WAKE_CHUNK_SAMPLES, WakeDetector
+from myagent.voice.wake import WAKE_CHUNK_SAMPLES, PhraseWake, WakeDetector
 
 log = get_logger(__name__)
 
@@ -97,8 +97,23 @@ class Pipeline:
         models_dir = settings.resolved_models_dir()
         self.vad = SileroVad(models_dir)
         self.segmenter = SpeechSegmenter(settings.vad)
-        self.wake = WakeDetector(settings.wake, models_dir) if settings.mode == "wake" else None
         self.stt = Transcriber(settings.stt, models_dir)
+        self.wake: WakeDetector | None = None
+        self.phrase_wake: PhraseWake | None = None
+        self.wake_stt: Transcriber | None = None
+        if settings.mode == "wake":
+            if settings.wake.phrase:
+                self.phrase_wake = PhraseWake(settings.wake.phrase, settings.wake.phrase_similarity)
+                # Deliberately a *local* transcriber even when the main engine
+                # is cloud: deciding whether speech was addressed to the
+                # assistant means examining everything said near the mic, and
+                # that must not leave the machine.
+                self.wake_stt = Transcriber(
+                    settings.stt.model_copy(update={"engine": "local"}), models_dir
+                )
+                log.info("wake_phrase", phrase=self.phrase_wake.phrase)
+            else:
+                self.wake = WakeDetector(settings.wake, models_dir)
         self.tts = create_synthesizer(settings.tts, models_dir)
 
         self._audio_lock = asyncio.Lock()  # guards stream swap vs playback
@@ -338,14 +353,34 @@ class Pipeline:
             utterance = self.segmenter.feed(frame, probability)
             if utterance is None:
                 continue
+            # Whether this burst still needs a wake word is decided *before*
+            # the window is refreshed for transcription.
+            needs_wake = self.phrase_wake is not None and not self._is_attending()
             self.vad.reset()
             self._reported_listening = False
             self._refresh_attention()  # keep the window open while transcribing
 
-            text = await asyncio.to_thread(self.stt.transcribe, utterance.audio)
+            engine = self.wake_stt if needs_wake else self.stt
+            assert engine is not None
+            text = await asyncio.to_thread(engine.transcribe, utterance.audio)
             if not text:
                 continue
             log.info("utterance", text=text, seconds=round(utterance.duration_s, 2))
+
+            if needs_wake:
+                assert self.phrase_wake is not None
+                woke, remainder = self.phrase_wake.check(text)
+                if not woke:
+                    # Not addressed to us. Close the window that transcribing
+                    # opened, so overheard speech does not keep it alive.
+                    self._attend_until = 0.0
+                    continue
+                log.info("wake_phrase_matched", text=text)
+                if not remainder:
+                    await self._report_state(socket, "waiting")
+                    continue
+                # "hey ev what's the time" - wake and request in one breath.
+                text = remainder
 
             if self._sleep_requested(text):
                 # Close attention without answering: the wake word is needed

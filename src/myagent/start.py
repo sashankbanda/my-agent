@@ -28,6 +28,10 @@ log = get_logger(__name__)
 
 BOOT_TIMEOUT_S = 45.0
 SHUTDOWN_GRACE_S = 5.0
+# A child that stays up this long is working; anything shorter is a crash on
+# startup, and repeating it will not help.
+HEALTHY_RUN_S = 30.0
+MAX_FAST_RESTARTS = 3
 
 
 @dataclass
@@ -38,12 +42,29 @@ class Child:
     argv: list[str]
     group: ProcessGroup | None = None
     process: subprocess.Popen[bytes] | None = None
+    restarts: int = 0
+    started_at: float = 0.0
+    given_up: bool = False
 
     def start(self) -> None:
         self.process = subprocess.Popen(self.argv)
+        self.started_at = time.monotonic()
         if self.group is not None:
             self.group.add(self.process.pid)
         log.info("started", component=self.name, pid=self.process.pid)
+
+    def crashing_repeatedly(self) -> bool:
+        """True when this child keeps dying too fast to be worth retrying.
+
+        A process that ran for a while and then died is worth restarting; one
+        that dies during startup has something wrong with it that another
+        attempt will not fix.
+        """
+        if time.monotonic() - self.started_at > HEALTHY_RUN_S:
+            self.restarts = 0  # it was up long enough to count as working
+            return False
+        self.restarts += 1
+        return self.restarts > MAX_FAST_RESTARTS
 
     @property
     def alive(self) -> bool:
@@ -93,16 +114,29 @@ class Supervisor:
 
         The kernel is essential: if it dies, everything stops. Voice and the
         overlay are conveniences, so they are restarted quietly.
+
+        Restarting stops after a few rapid failures. A crash on startup - a
+        typo in a config file, a missing model - is not transient, and
+        retrying it every second forever produces a wall of identical
+        tracebacks with the real message scrolled off the top.
         """
         try:
             while True:
                 time.sleep(1.0)
                 for child in self.children:
-                    if child.alive:
+                    if child.alive or child.given_up:
                         continue
                     if child.name == "kernel":
                         log.error("kernel_exited", action="shutting down")
                         return
+                    if child.crashing_repeatedly():
+                        child.given_up = True
+                        print(
+                            f"\n  {child.name} keeps failing to start and has been left "
+                            f"stopped.\n  The error is above; fix it and restart MyAgent."
+                        )
+                        log.error("giving_up", component=child.name, attempts=child.restarts)
+                        continue
                     log.warning("restarting", component=child.name)
                     child.start()
         except KeyboardInterrupt:

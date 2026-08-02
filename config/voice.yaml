@@ -23,12 +23,27 @@ output_device: null
 models_dir: null
 
 wake:
-  # openWakeWord built-in model names: hey_jarvis, alexa, hey_mycroft.
+  # A wake word is a TRAINED MODEL, not a label - you cannot create one by
+  # changing this string. Only these are installed:
+  #     hey_jarvis | alexa | hey_mycroft
   # Run --mic-check and watch the score columns to pick the one your voice
   # actually triggers, then set it here.
   model: hey_jarvis
   # Slightly BELOW your typical score in --mic-check.
   threshold: 0.4
+
+  # Want a wake word of your OWN? Set this to any words you like; it replaces
+  # `model` above:
+  #     phrase: "hey ev"
+  # It transcribes short bursts of speech on this machine (never uploaded) and
+  # compares them to your phrase, so it costs ~100-300 ms of CPU per burst
+  # where the built-in models cost almost nothing. In exchange you can say
+  # anything - and "hey ev what's the time" wakes it AND asks, in one breath.
+  phrase: null
+  # How close the transcription must be (0-1). Speech-to-text mangles short
+  # phrases, so lower this if your wake word gets missed, raise it if ordinary
+  # conversation keeps triggering it.
+  phrase_similarity: 0.72
   # Seconds of attention AFTER the assistant finishes speaking. Each exchange
   # refreshes this, so a continuing conversation never needs the wake word
   # again - it only closes after this much real silence.

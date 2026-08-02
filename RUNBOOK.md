@@ -113,13 +113,41 @@ Speak during the countdown. You get one line per second:
 
 ### Changing the wake word
 
-Edit [config/voice.yaml](config/voice.yaml):
+**A wake word is a trained model, not a label** — you cannot invent one by
+typing a new name. Only three are installed:
 
 ```yaml
 wake:
-  model: alexa        # alexa | hey_jarvis | hey_mycroft
+  model: alexa        # alexa | hey_jarvis | hey_mycroft — these three only
   threshold: 0.4      # set slightly BELOW your typical score
 ```
+
+Put anything else there and voice refuses to start, telling you what *is*
+available. `--mic-check` prints the same thing before it does anything else.
+
+### A wake word of your own ("hey ev", "okay computer", anything)
+
+Set `phrase` instead — it replaces `model`:
+
+```yaml
+wake:
+  phrase: "hey ev"
+  phrase_similarity: 0.72   # lower = easier to trigger, higher = fewer false ones
+```
+
+This works differently: short bursts of speech are transcribed **on this
+machine** (never uploaded, whatever your STT engine is) and compared to your
+phrase. Two consequences:
+
+- It costs ~100–300 ms of CPU per burst of speech, where the built-in models
+  cost almost nothing. Fine on this laptop, but it is real work.
+- Because the whole utterance is transcribed, **"hey ev what's the time" wakes
+  it and asks in one breath** — no pause needed.
+
+Speech-to-text mangles short phrases ("hey ev" → "hey f", "hey eb"), so
+matching is fuzzy on purpose. Two or three syllables that don't sound like
+common speech work best; avoid a phrase that starts like something you say a
+lot.
 
 Then restart Terminal 2 (`Ctrl+C`, then `uv run python -m myagent.voice`).
 

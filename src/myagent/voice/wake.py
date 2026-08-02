@@ -7,6 +7,8 @@ prevents one spoken wake word from triggering repeatedly.
 
 from __future__ import annotations
 
+import re
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import cast
 
@@ -37,12 +39,46 @@ def wake_model_files(wake_dir: Path) -> list[Path]:
     return [path for path in sorted(wake_dir.glob("*.onnx")) if is_wake_model_file(path)]
 
 
+def available_wake_words(models_dir: Path) -> list[str]:
+    """Wake words this machine can actually detect, by spoken name.
+
+    File stems carry a version suffix ("hey_jarvis_v0.1"); the name people put
+    in the config file does not.
+    """
+    names = []
+    for path in wake_model_files(models_dir / "openwakeword"):
+        names.append(re.sub(r"_v\d+(\.\d+)*$", "", path.stem))
+    return sorted(set(names))
+
+
+class UnknownWakeWordError(ValueError):
+    """The configured wake word has no model on this machine.
+
+    Worth its own type because the fix is a specific one-line config edit, and
+    the message has to say which words are actually available - a wake word is
+    a trained model, not a label, so it cannot be conjured by renaming.
+    """
+
+
 def resolve_wake_model(models_dir: Path, name: str) -> str:
-    """Path of a downloaded wake model, or the bare name (package builtin)."""
+    """Path of a downloaded wake model for ``name``.
+
+    Raises rather than passing an unknown name through to openWakeWord, whose
+    own error ("Could not find pretrained model") does not say what *would*
+    work - and which crashed the satellite into a restart loop while the HUD
+    just showed "voice off".
+    """
     for candidate in wake_model_files(models_dir / "openwakeword"):
         if candidate.name.startswith(name):
             return str(candidate)
-    return name
+    available = available_wake_words(models_dir)
+    raise UnknownWakeWordError(
+        f"there is no wake-word model called {name!r} on this machine. A wake "
+        f"word is a trained model, not a label, so renaming one does not "
+        f"create it. Available: {', '.join(available) or '(none downloaded)'}. "
+        f"Set wake.model in config/voice.yaml to one of those, or set "
+        f"wake.phrase to any words you like for a custom one."
+    )
 
 
 class WakeDetector:
@@ -91,3 +127,82 @@ class WakeDetector:
             self._refractory_until = self._clock_s + REFRACTORY_S
             return True
         return False
+
+
+# -- custom wake phrases ------------------------------------------------------
+
+# Speech-to-text mangles short phrases badly - "hey ev" comes back as "hey f",
+# "heyev", "hey Eb", "Hey, EV." - so matching is fuzzy and works on a
+# normalized form. Anything stricter rejects the user's own wake word.
+# Apostrophes are kept so "what's" stays one word. That matters beyond
+# tidiness: the remainder of the utterance becomes the user's request, and
+# splitting it into "what s" would hand the model damaged text.
+_PUNCTUATION = re.compile(r"[^\w\s'\N{RIGHT SINGLE QUOTATION MARK}]+")
+
+
+def normalize_phrase(text: str) -> str:
+    """Lowercase, drop punctuation between words, collapse whitespace."""
+    return " ".join(_PUNCTUATION.sub(" ", text.lower()).split())
+
+
+class PhraseWake:
+    """A wake word of your own, recognized by transcription rather than a model.
+
+    openWakeWord only knows the handful of words it was trained on, and
+    training a new one needs hours of GPU time - so a custom wake word has to
+    come from somewhere else. Since the pipeline already transcribes speech,
+    it can transcribe the short bursts that arrive while idle and check
+    whether they were addressed to the assistant.
+
+    The trade is explicit: this costs a local transcription per speech burst
+    (roughly 100-300 ms of CPU) where the model-based path costs almost
+    nothing. In exchange the wake word is whatever you want, and one useful
+    thing falls out for free - because the whole utterance is transcribed,
+    "hey ev what's the time" wakes it *and* carries the request, instead of
+    needing a pause between the two.
+    """
+
+    def __init__(self, phrase: str, similarity: float = 0.72) -> None:
+        self.phrase = normalize_phrase(phrase)
+        if not self.phrase:
+            raise ValueError("wake.phrase is empty")
+        self._words = self.phrase.split()
+        self._similarity = similarity
+
+    def check(self, text: str) -> tuple[bool, str]:
+        """Was this addressed to the assistant, and what remains of it?
+
+        Returns ``(woke, remainder)``. The remainder is whatever followed the
+        wake phrase, so it can be handled as the request in the same breath.
+        """
+        spoken = normalize_phrase(text)
+        if not spoken:
+            return False, ""
+        words = spoken.split()
+
+        # The phrase leads the utterance: the common case, and the only one
+        # where the rest is meant as a request.
+        window = len(self._words)
+        if len(words) >= window:
+            head = " ".join(words[:window])
+            if self._matches(head):
+                # Take the remainder from the ORIGINAL text, so the request
+                # keeps its punctuation and capitalisation rather than being
+                # handed to the model in normalized form.
+                original = text.split()
+                remainder = (
+                    " ".join(original[window:]).strip(" ,.")
+                    if len(original) == len(words)
+                    else " ".join(words[window:])
+                )
+                return True, remainder
+        # A bare wake word that STT split oddly ("hey" / "ev" as one blob), or
+        # the phrase sitting alone in a longer mishearing.
+        if len(words) <= window + 1 and self._matches(spoken):
+            return True, ""
+        return False, ""
+
+    def _matches(self, candidate: str) -> bool:
+        if candidate == self.phrase:
+            return True
+        return SequenceMatcher(None, candidate, self.phrase).ratio() >= self._similarity

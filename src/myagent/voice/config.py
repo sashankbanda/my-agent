@@ -18,8 +18,26 @@ FRAME_SAMPLES = 512  # 32 ms - the Silero VAD frame size at 16 kHz
 
 
 class WakeSettings(BaseModel):
+    """How the assistant decides you are talking to it.
+
+    Two mechanisms, and which one runs depends on whether ``phrase`` is set.
+
+    ``model`` is a *trained neural network* named by one of openWakeWord's
+    pretrained words (alexa, hey_jarvis, hey_mycroft). Cheap - it scores every
+    80 ms of audio on the CPU for nothing - but you cannot invent a new one by
+    changing this string.
+
+    ``phrase`` is any words you like. It costs more (short speech bursts are
+    transcribed on-device to check them) and buys a wake word that is yours.
+    """
+
     model: str = "hey_jarvis"
     threshold: float = 0.5
+    # Any spoken phrase, e.g. "hey ev". Overrides `model` when set.
+    phrase: str | None = None
+    # How close the transcription must be to `phrase` (0-1). Speech-to-text
+    # mangles short phrases, so this is forgiving by default.
+    phrase_similarity: float = 0.72
     # Seconds of attention after the assistant STOPS SPEAKING. Every exchange
     # refreshes it, so a real back-and-forth never needs the wake word again.
     followup_window: float = 30.0

@@ -19,6 +19,32 @@ from myagent.logging import configure_logging, get_logger
 from myagent.voice.config import load_voice_settings
 
 
+def _report_wake_config(settings: object, models_dir: Path) -> None:
+    """Say what the wake setting is, and whether it can possibly work.
+
+    The first thing to check when voice is deaf is whether the configured wake
+    word exists at all - a name with no model behind it crashed the satellite
+    on startup, and this is the command people run to find out why.
+    """
+    from myagent.voice.wake import available_wake_words
+
+    wake = settings.wake  # type: ignore[attr-defined]
+    if wake.phrase:
+        print(f"wake phrase: {wake.phrase!r} (custom, matched by transcription)")
+        return
+    available = available_wake_words(models_dir)
+    if wake.model in available:
+        print(f"wake word: {wake.model} (threshold {wake.threshold})")
+        return
+    print(
+        f"\n  !! wake.model is {wake.model!r}, and there is no such model.\n"
+        f"     A wake word is a trained model, not a label.\n"
+        f"     Installed: {', '.join(available) or '(none)'}\n"
+        f'     Either pick one of those, or set wake.phrase: "{wake.model.replace("_", " ")}"'
+        f" for a custom one.\n"
+    )
+
+
 def mic_check(seconds: int) -> None:
     """Live per-second report of level / VAD / and EVERY wake model's score.
 
@@ -37,6 +63,7 @@ def mic_check(seconds: int) -> None:
 
     settings = load_voice_settings()
     models_dir = settings.resolved_models_dir()
+    _report_wake_config(settings, models_dir)
     device: str | int | None = settings.input_device
     if device is not None:
         print(f"configured input device: {sd.query_devices(device)['name']}")

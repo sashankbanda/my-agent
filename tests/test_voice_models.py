@@ -12,6 +12,8 @@ checkout). Kokoro has its own additionally-gated test.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -156,3 +158,112 @@ def test_kokoro_engine_synthesizes() -> None:
     samples, rate = tts.synthesize("Quality check.")
     assert rate == 24_000
     assert len(samples) > rate // 4  # at least a quarter second of audio
+
+
+class TestUnknownWakeWord:
+    """A wake word is a trained model, not a label.
+
+    Renaming wake.model to something with no model behind it crashed the
+    satellite on startup, and the launcher restarted it every second forever
+    while the HUD just showed "voice off".
+    """
+
+    def test_an_unknown_name_is_refused_with_the_alternatives(self, tmp_path: Path) -> None:
+        from myagent.voice.wake import UnknownWakeWordError, resolve_wake_model
+
+        wake_dir = tmp_path / "openwakeword"
+        wake_dir.mkdir(parents=True)
+        for name in ("hey_jarvis_v0.1.onnx", "alexa_v0.1.onnx", "melspectrogram.onnx"):
+            (wake_dir / name).touch()
+
+        with pytest.raises(UnknownWakeWordError) as caught:
+            resolve_wake_model(tmp_path, "hey_ev")
+
+        message = str(caught.value)
+        assert "hey_ev" in message
+        assert "hey_jarvis" in message and "alexa" in message
+        assert "melspectrogram" not in message, "helper models are not wake words"
+        assert "wake.phrase" in message, "the custom-phrase route must be offered"
+
+    def test_available_names_drop_the_version_suffix(self, tmp_path: Path) -> None:
+        """Files are 'hey_jarvis_v0.1'; the config value is 'hey_jarvis'."""
+        from myagent.voice.wake import available_wake_words
+
+        wake_dir = tmp_path / "openwakeword"
+        wake_dir.mkdir(parents=True)
+        (wake_dir / "hey_jarvis_v0.1.onnx").touch()
+        (wake_dir / "hey_mycroft_v0.1.onnx").touch()
+
+        assert available_wake_words(tmp_path) == ["hey_jarvis", "hey_mycroft"]
+
+    def test_a_known_name_still_resolves(self, tmp_path: Path) -> None:
+        from myagent.voice.wake import resolve_wake_model
+
+        wake_dir = tmp_path / "openwakeword"
+        wake_dir.mkdir(parents=True)
+        (wake_dir / "hey_jarvis_v0.1.onnx").touch()
+
+        assert resolve_wake_model(tmp_path, "hey_jarvis").endswith("hey_jarvis_v0.1.onnx")
+
+
+class TestCustomWakePhrase:
+    """A wake word of your own, matched by transcription.
+
+    openWakeWord knows three words and training a fourth needs hours of GPU
+    time, so a custom wake word has to come from the transcription the
+    pipeline can already produce.
+    """
+
+    @pytest.mark.parametrize(
+        "heard",
+        ["hey ev", "Hey, Ev.", "HEY EV", "hey eb", "hey f", "heyev", "hey  ev  "],
+    )
+    def test_mishearings_of_the_phrase_still_wake_it(self, heard: str) -> None:
+        """STT mangles two-syllable phrases; strict matching rejects the user."""
+        from myagent.voice.wake import PhraseWake
+
+        woke, _ = PhraseWake("hey ev").check(heard)
+        assert woke is True
+
+    @pytest.mark.parametrize(
+        "heard",
+        ["hello there", "what is the time", "hey everyone lets go", "", "the end"],
+    )
+    def test_ordinary_speech_does_not_wake_it(self, heard: str) -> None:
+        from myagent.voice.wake import PhraseWake
+
+        woke, _ = PhraseWake("hey ev").check(heard)
+        assert woke is False
+
+    def test_the_request_in_the_same_breath_is_kept(self) -> None:
+        """The whole utterance is transcribed, so no pause is needed."""
+        from myagent.voice.wake import PhraseWake
+
+        woke, remainder = PhraseWake("hey ev").check("Hey EV, what's the time?")
+        assert woke is True
+        assert remainder == "what's the time?"
+
+    def test_a_bare_wake_word_leaves_no_request(self) -> None:
+        from myagent.voice.wake import PhraseWake
+
+        assert PhraseWake("hey ev").check("hey ev") == (True, "")
+
+    def test_a_longer_phrase_works_too(self) -> None:
+        from myagent.voice.wake import PhraseWake
+
+        woke, remainder = PhraseWake("okay computer").check("okay computer open chrome")
+        assert woke is True
+        assert remainder == "open chrome"
+
+    def test_an_empty_phrase_is_refused(self) -> None:
+        from myagent.voice.wake import PhraseWake
+
+        with pytest.raises(ValueError, match="empty"):
+            PhraseWake("   ")
+
+    def test_sensitivity_is_adjustable(self) -> None:
+        """Lower it if your wake word is missed, raise it for false triggers."""
+        from myagent.voice.wake import PhraseWake
+
+        assert PhraseWake("hey ev", similarity=0.99).check("hey eb")[0] is False
+        assert PhraseWake("hey ev", similarity=0.5).check("hey eb")[0] is True
