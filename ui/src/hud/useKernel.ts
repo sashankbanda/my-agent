@@ -144,6 +144,8 @@ export function describeEvent(event: KernelEvent): { text: string; kind: string 
       return { text: `backup uploaded (${data.size} bytes)`, kind: "vault" };
     case "TurnInterrupted":
       return { text: "you interrupted", kind: "warn" };
+    case "LanguageCorrected":
+      return { text: "answered in the wrong language — retrying", kind: "warn" };
     case "ToolNudge":
       return { text: "explained instead of acting — retrying with tools", kind: "warn" };
     case "UserStopped":

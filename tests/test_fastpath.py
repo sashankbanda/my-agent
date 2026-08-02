@@ -385,3 +385,62 @@ class TestWebShortcuts:
         intent = fastpath.match("open chrome")
         assert intent is not None
         assert intent.tool == "apps.open"
+
+
+class TestWakeWordInTranscript:
+    """The wake word lands inside the transcript, spelled however it was heard.
+
+    Live example: "Hey Javis!" reached the model and came back in Chinese,
+    when it should have been a free greeting.
+    """
+
+    @pytest.mark.parametrize(
+        "text", ["Hey Javis!", "hey jarvis", "Jarvis.", "hey jervis,", "Alexa"]
+    )
+    def test_a_bare_wake_word_is_a_greeting(self, text: str) -> None:
+        intent = fastpath.match(text)
+        assert intent is not None
+        assert intent.name == "greeting"
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("Hey Jarvis, what is the time now?", "time"),
+            ("jarvis open chrome", "open"),
+            ("Hey Javis, what's my battery", "status"),
+        ],
+    )
+    def test_the_request_after_the_wake_word_still_matches(self, text: str, expected: str) -> None:
+        intent = fastpath.match(text)
+        assert intent is not None
+        assert intent.name == expected
+
+    def test_ordinary_words_are_not_stripped(self) -> None:
+        assert fastpath.strip_wake_word("hey there") == "hey there"
+        assert fastpath.strip_wake_word("open chrome") == "open chrome"
+
+
+class TestTimePhrasings:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "what's the time now",
+            "whats the time now?",
+            "what time is it right now",
+            "what's the time",
+            "time now",
+        ],
+    )
+    def test_trailing_now_still_matches(self, text: str) -> None:
+        """Missing this sent the question to a model, which invented a time."""
+        intent = fastpath.match(text)
+        assert intent is not None
+        assert intent.name == "time"
+
+    def test_the_reply_comes_from_the_clock(self) -> None:
+        from datetime import datetime
+
+        intent = fastpath.match("what's the time now")
+        assert intent is not None
+        assert intent.tool is None  # no tool, no model, no chance to hallucinate
+        assert datetime.now().astimezone().strftime("%p") in intent.reply

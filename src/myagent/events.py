@@ -51,6 +51,7 @@ class EventType(StrEnum):
     FAST_PATH_HANDLED = "FastPathHandled"  # answered locally, zero tokens
     ESCALATED_TO_CLOUD = "EscalatedToCloud"  # local model's answer was not good enough
     TOOL_NUDGE = "ToolNudge"  # model explained instead of acting; corrected in place
+    LANGUAGE_CORRECTED = "LanguageCorrected"  # replied in a script the user did not use
     TOOL_CALL_REQUESTED = "ToolCallRequested"
     TOOL_CALL_COMPLETED = "ToolCallCompleted"
     PERMISSION_DECIDED = "PermissionDecided"

@@ -247,6 +247,43 @@ def looks_like_tool_leak(answer: str) -> bool:
     return bool(_TOOL_LEAK.search(answer))
 
 
+# qwen2.5 is a Chinese-origin model and drifts into Chinese unprompted - one
+# English greeting was enough to trigger it. Detect the drift rather than
+# trusting the system prompt alone, because a 3B follows instructions loosely.
+_LATIN_END = 0x24F  # end of Latin Extended-B; anything past it is another script
+# Generous: a genuinely drifted reply is ~100% foreign, while a legitimate
+# English answer that quotes a foreign word or name stays well under this.
+_FOREIGN_SHARE = 0.3
+
+# If the user asked for another language, replying in it is correct, so the
+# automatic correction must stand down.
+_LANGUAGE_REQUEST = re.compile(
+    r"\b(?:chinese|mandarin|cantonese|hindi|telugu|tamil|kannada|malayalam|marathi|"
+    r"bengali|gujarati|punjabi|urdu|spanish|french|german|japanese|korean|arabic|"
+    r"russian|portuguese|italian|dutch|turkish|hebrew|thai|vietnamese|"
+    r"language|translate|translation)\b",
+    re.I,
+)
+
+
+def _foreign_script_share(text: str) -> float:
+    """Fraction of the letters that are outside the Latin alphabet."""
+    letters = [character for character in text if character.isalpha()]
+    if not letters:
+        return 0.0
+    foreign = sum(1 for character in letters if ord(character) > _LATIN_END)
+    return foreign / len(letters)
+
+
+def wrong_language(user_text: str, answer: str) -> bool:
+    """True when the reply switched scripts on the user unasked."""
+    if _LANGUAGE_REQUEST.search(user_text):
+        return False  # they asked for another language
+    if _foreign_script_share(user_text) > _FOREIGN_SHARE:
+        return False  # they wrote in that script; matching it is right
+    return _foreign_script_share(answer) > _FOREIGN_SHARE
+
+
 def should_escalate(answer: str) -> tuple[bool, str]:
     """True if the local answer is not good enough to show the user."""
     text = answer.strip()

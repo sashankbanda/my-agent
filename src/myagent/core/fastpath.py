@@ -198,12 +198,33 @@ _YOUTUBE_SEARCH = re.compile(
     r"\s+(.+?)\s+on\s+youtube[.?!]?$",
     re.IGNORECASE,
 )
-_TIME = re.compile(rf"^(?:{_WHATS}\s+the\s+time|what\s+time\s+is\s+it|time)[.?!]?$", re.IGNORECASE)
-_DATE = re.compile(
-    rf"^(?:{_WHATS}\s+(?:the\s+)?(?:date|day)(?:\s+today)?|what\s+day\s+is\s+it|"
-    rf"what\s+is\s+today(?:{_APOS}s)?(?:\s+date)?)[.?!]?$",
+# Trailing "now" / "right now" / "currently" is how people actually ask, and
+# missing it sent the question to a model that then invented a time.
+_NOW = r"(?:\s+(?:right\s+)?now|\s+currently|\s+please)*"
+_TIME = re.compile(
+    rf"^(?:{_WHATS}\s+the\s+time|what\s+time\s+is\s+it|time){_NOW}[.?!]?$",
     re.IGNORECASE,
 )
+_DATE = re.compile(
+    rf"^(?:{_WHATS}\s+(?:the\s+)?(?:date|day)(?:\s+today)?|what\s+day\s+is\s+it|"
+    rf"what\s+is\s+today(?:{_APOS}s)?(?:\s+date)?){_NOW}[.?!]?$",
+    re.IGNORECASE,
+)
+
+
+# The wake word often lands inside the transcript ("Hey Javis, what's the
+# time"), and Whisper spells it however it heard it. Stripping the prefix is
+# what makes "hey jarvis open chrome" the same request as "open chrome".
+_WAKE_PREFIX = re.compile(
+    r"^(?:hey|hi|hello|ok|okay)?[\s,]*"
+    r"(?:jarvis|javis|jervis|jarviss|jaravis|alexa|mycroft|my croft)\b[\s,.!?]*",
+    re.IGNORECASE,
+)
+
+
+def strip_wake_word(text: str) -> str:
+    """Remove a leading wake word, leaving the actual request."""
+    return _WAKE_PREFIX.sub("", text.strip(), count=1).strip()
 
 
 def match(text: str) -> Intent | None:
@@ -211,6 +232,10 @@ def match(text: str) -> Intent | None:
     stripped = text.strip()
     if not stripped:
         return None
+    without_wake = strip_wake_word(stripped)
+    if not without_wake:
+        return Intent(name="greeting", reply="Hey. What do you need?")
+    stripped = without_wake
     lowered = stripped.lower().rstrip("!.?")
 
     if lowered in GREETINGS:

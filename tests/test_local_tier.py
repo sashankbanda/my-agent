@@ -433,3 +433,57 @@ class TestToolDeflectionGuard:
         answer = await drain(loop, session, "who wrote Hamlet")
 
         assert answer.strip() == "You would need to read the play to find out."
+
+
+class TestLanguageDrift:
+    """qwen2.5 is Chinese-origin and switches language unprompted.
+
+    Observed live: an English "Hey Jarvis!" came back as
+    "嗨\uff01有什麼可以幫你的嗎\uff1f". One line in the system prompt is not enough for a
+    3B, so the drift is detected and corrected.
+    """
+
+    def test_drift_to_another_script_is_caught(self) -> None:
+        assert complexity.wrong_language("Hey Jarvis!", "嗨\uff01有什麼可以幫你的嗎\uff1f") is True
+
+    def test_english_answers_are_fine(self) -> None:
+        assert complexity.wrong_language("what is the time", "It's 8:01 AM.") is False
+
+    def test_a_quoted_foreign_word_is_not_drift(self) -> None:
+        answer = "The Japanese word for cat is neko, written 猫."
+        assert complexity.wrong_language("what is cat in japanese", answer) is False
+
+    def test_matching_the_users_script_is_correct(self) -> None:
+        """If they write Chinese, answering in Chinese is the right thing."""
+        assert complexity.wrong_language("你好吗", "我很好\uff0c谢谢\u3002") is False
+
+    def test_an_explicit_request_is_honoured(self) -> None:
+        assert complexity.wrong_language("reply in chinese please", "你好") is False
+        assert complexity.wrong_language("translate this to hindi", "नमस्ते") is False
+
+    def test_empty_text_is_not_drift(self) -> None:
+        assert complexity.wrong_language("hi", "") is False
+
+    async def test_a_drifted_reply_is_retried_not_shown(
+        self, db: sqlite3.Connection, settings: Settings
+    ) -> None:
+        loop, client = build_sequenced(
+            settings, [["嗨\uff01有什麼可以幫你的嗎\uff1f"], ["Hi! What do you need?"]]
+        )
+        session = loop.ensure_session(None)
+        answer = await drain(loop, session, "Hey Jarvis!")
+
+        assert answer.strip() == "Hi! What do you need?"
+        assert len(client.calls) == 2, "the model was asked again"
+        types = [row["type"] for row in db.execute("SELECT type FROM events ORDER BY id")]
+        assert "LanguageCorrected" in types
+
+    async def test_the_correction_is_sent_only_once(
+        self, db: sqlite3.Connection, settings: Settings
+    ) -> None:
+        """A model that keeps drifting must not loop forever."""
+        loop, client = build_sequenced(settings, [["你好"], ["你好"], ["你好"]])
+        session = loop.ensure_session(None)
+        await drain(loop, session, "Hey Jarvis!")
+
+        assert len(client.calls) == 2
