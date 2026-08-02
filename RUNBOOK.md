@@ -144,10 +144,33 @@ phrase. Two consequences:
 - Because the whole utterance is transcribed, **"hey ev what's the time" wakes
   it and asks in one breath** — no pause needed.
 
-Speech-to-text mangles short phrases ("hey ev" → "hey f", "hey eb"), so
-matching is fuzzy on purpose. Two or three syllables that don't sound like
-common speech work best; avoid a phrase that starts like something you say a
-lot.
+**Test a phrase before committing to it:**
+
+```
+uv run python -m myagent.voice --wake-test --phrase "hey eva"
+```
+
+Say it a few times. You get the transcription, the similarity score, and
+whether it woke:
+
+```
+  WOKE  heard 'Hey Eva, what is the time?'   similarity 1.00   -> request: 'what is the time?'
+   -    heard 'what is the weather today'    similarity 0.31
+```
+
+**Choose a phrase with a real word after "hey".** Measured on this machine
+through actual speech-to-text:
+
+| phrase | transcribed as | matches itself | matches other speech |
+|---|---|---|---|
+| "hey ev" | *"Hey, love"*, *"Hey of"* | 0.67 | **0.67** ✗ useless |
+| "hey eva" | "Hey Eva" | 1.00 | 0.62 ✓ |
+| "hey computer" | "Hey computer" | 1.00 | 0.67 ✓ |
+| "hey buddy" | "Hey buddy" | 1.00 | 0.44 ✓ best |
+
+One short syllable ("ev") has no separation at all — it scores the same
+against your wake word as against random conversation. One extra vowel fixes
+it. The startup log warns you if your phrase looks too short.
 
 Then restart Terminal 2 (`Ctrl+C`, then `uv run python -m myagent.voice`).
 

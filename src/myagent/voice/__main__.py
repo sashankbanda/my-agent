@@ -5,6 +5,8 @@ Options:
     --mic-check [SEC]  capture SEC seconds (default 15) and report what the
                        pipeline hears: input level, VAD probability, wake
                        score - the first thing to run when voice seems deaf
+    --wake-test [SEC]  try a custom wake phrase live; --phrase "hey ev" to
+                       test one without editing the config first
     --config PATH      alternate voice.yaml
 """
 
@@ -12,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import time
 from pathlib import Path
 from typing import cast
 
@@ -126,6 +129,82 @@ def mic_check(seconds: int) -> None:
         mic.stop()
 
 
+def wake_test(seconds: int, phrase: str | None) -> None:
+    """Live check of a custom wake phrase: say it and see whether it triggers.
+
+    The built-in wake models score 0.00 for some voices no matter how loud and
+    clear the speech is - accent, pitch, and microphone all matter, and there
+    is nothing to tune. This is the way out, so it needs a way to try a phrase
+    and see the number, rather than editing config and hoping.
+    """
+    import sounddevice as sd
+
+    from myagent.voice.audio import MicStream, probe_live_input
+    from myagent.voice.stt import Transcriber
+    from myagent.voice.vad import SileroVad, SpeechSegmenter
+    from myagent.voice.wake import PhraseWake
+
+    settings = load_voice_settings()
+    chosen = phrase or settings.wake.phrase
+    if not chosen:
+        print(
+            "No phrase to test. Either pass one:\n"
+            '    uv run python -m myagent.voice --wake-test --phrase "hey ev"\n'
+            "or set wake.phrase in config/voice.yaml."
+        )
+        return
+
+    models_dir = settings.resolved_models_dir()
+    matcher = PhraseWake(chosen, settings.wake.phrase_similarity)
+    device: str | int | None = settings.input_device
+    if device is None:
+        device = probe_live_input()
+    name = sd.query_devices(device if device is not None else None)["name"]
+    print(f"input device: {name}")
+    print(f"testing wake phrase: {chosen!r}  (needs {settings.wake.phrase_similarity} similarity)")
+    print("Transcribed on this machine - nothing is uploaded.")
+    print(f"\nSay it a few times, with pauses. Listening for {seconds}s...\n")
+
+    stt = Transcriber(settings.stt.model_copy(update={"engine": "local"}), models_dir)
+    vad = SileroVad(models_dir)
+    segmenter = SpeechSegmenter(settings.vad)
+    mic = MicStream(device)
+    mic.start()
+    heard = 0
+    woke = 0
+    try:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            frame = mic.get(timeout=1.0)
+            if frame is None:
+                continue
+            utterance = segmenter.feed(frame, vad(frame))
+            if utterance is None:
+                continue
+            vad.reset()
+            text = stt.transcribe(utterance.audio)
+            if not text:
+                continue
+            heard += 1
+            matched, remainder = matcher.check(text)
+            score = matcher.best_similarity(text)
+            woke += matched
+            mark = "WOKE " if matched else "  -  "
+            extra = f"   -> request: {remainder!r}" if remainder else ""
+            print(f"  {mark} heard {text!r:38} similarity {score:4.2f}{extra}")
+    finally:
+        mic.stop()
+
+    print(f"\n{woke} of {heard} utterances woke it.")
+    if heard and not woke:
+        print(
+            "  Nothing matched. Lower wake.phrase_similarity (try 0.6), or pick a\n"
+            "  phrase that transcribes more reliably - look at what it heard above."
+        )
+    elif woke:
+        print(f'  Working. Put this in config/voice.yaml:\n    wake:\n      phrase: "{chosen}"')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list-devices", action="store_true", help="print audio devices")
@@ -138,6 +217,16 @@ def main() -> None:
         metavar="SEC",
         help="capture SEC seconds and report level/VAD/wake",
     )
+    parser.add_argument(
+        "--wake-test",
+        nargs="?",
+        const=30,
+        type=int,
+        default=None,
+        metavar="SEC",
+        help="say a custom wake phrase and see whether it triggers",
+    )
+    parser.add_argument("--phrase", default=None, help='wake phrase to test, e.g. "hey ev"')
     parser.add_argument("--config", type=Path, default=None, help="alternate voice.yaml")
     args = parser.parse_args()
 
@@ -149,6 +238,10 @@ def main() -> None:
 
     if args.mic_check is not None:
         mic_check(args.mic_check)
+        return
+
+    if args.wake_test is not None:
+        wake_test(args.wake_test, args.phrase)
         return
 
     settings = load_voice_settings(args.config)

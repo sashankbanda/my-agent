@@ -14,7 +14,10 @@ from typing import cast
 
 import numpy as np
 
+from myagent.logging import get_logger
 from myagent.voice.config import SAMPLE_RATE, WakeSettings
+
+log = get_logger(__name__)
 
 WAKE_CHUNK_SAMPLES = 1280  # 80 ms - openWakeWord's expected feed size
 REFRACTORY_S = 2.0
@@ -139,6 +142,12 @@ class WakeDetector:
 # splitting it into "what s" would hand the model damaged text.
 _PUNCTUATION = re.compile(r"[^\w\s'\N{RIGHT SINGLE QUOTATION MARK}]+")
 
+# Words that only carry the phrase; the word *after* them is what identifies it.
+_CARRIER_WORDS = frozenset({"hey", "ok", "okay", "hi", "hello", "yo"})
+# Measured against real transcription: "ev" (2) scores 0.67 against itself and
+# 0.67 against unrelated speech - useless. "eva" (3) transcribes exactly.
+MIN_DISTINCTIVE_CHARS = 3
+
 
 def normalize_phrase(text: str) -> str:
     """Lowercase, drop punctuation between words, collapse whitespace."""
@@ -168,6 +177,26 @@ class PhraseWake:
             raise ValueError("wake.phrase is empty")
         self._words = self.phrase.split()
         self._similarity = similarity
+        if self.is_risky():
+            log.warning(
+                "wake_phrase_may_be_unreliable",
+                phrase=self.phrase,
+                why="the distinctive part is one short syllable",
+            )
+
+    def is_risky(self) -> bool:
+        """True when this phrase is too short to survive transcription.
+
+        Measured: "hey ev" comes back as "Hey, love" / "Hey of" / "Hey have",
+        scoring 0.67 against itself and 0.67 against unrelated speech - no
+        separation at all. One extra vowel fixes it: "hey eva" transcribes
+        exactly, every time. The distinctive word needs enough sound to be
+        heard as itself.
+        """
+        distinctive = [word for word in self._words if word not in _CARRIER_WORDS]
+        if not distinctive:
+            return True
+        return max(len(word) for word in distinctive) < MIN_DISTINCTIVE_CHARS
 
     def check(self, text: str) -> tuple[bool, str]:
         """Was this addressed to the assistant, and what remains of it?
@@ -201,6 +230,21 @@ class PhraseWake:
         if len(words) <= window + 1 and self._matches(spoken):
             return True, ""
         return False, ""
+
+    def similarity(self, candidate: str) -> float:
+        """How close a transcription is to the phrase (0-1).
+
+        Exposed so ``--wake-test`` can show the number next to the threshold:
+        "heard 0.64, need 0.72" is a tunable answer, "it didn't work" is not.
+        """
+        return SequenceMatcher(None, normalize_phrase(candidate), self.phrase).ratio()
+
+    def best_similarity(self, text: str) -> float:
+        """The score the leading words of ``text`` achieve against the phrase."""
+        words = normalize_phrase(text).split()
+        window = len(self._words)
+        head = " ".join(words[:window]) if len(words) >= window else " ".join(words)
+        return max(self.similarity(head), self.similarity(text))
 
     def _matches(self, candidate: str) -> bool:
         if candidate == self.phrase:

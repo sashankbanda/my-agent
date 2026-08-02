@@ -267,3 +267,42 @@ class TestCustomWakePhrase:
 
         assert PhraseWake("hey ev", similarity=0.99).check("hey eb")[0] is False
         assert PhraseWake("hey ev", similarity=0.5).check("hey eb")[0] is True
+
+
+class TestRiskyWakePhrases:
+    """Some phrases cannot work, and saying so early beats debugging silence.
+
+    Measured through real TTS -> speech-to-text: "hey ev" comes back as
+    "Hey, love" / "Hey of" / "Hey have", scoring 0.67 against itself and 0.67
+    against unrelated speech - no separation at all. "hey eva" transcribes
+    exactly. One vowel is the difference.
+    """
+
+    @pytest.mark.parametrize("phrase", ["hey ev", "okay ev", "hey", "hi yo"])
+    def test_one_syllable_phrases_are_flagged(self, phrase: str) -> None:
+        from myagent.voice.wake import PhraseWake
+
+        assert PhraseWake(phrase).is_risky() is True
+
+    @pytest.mark.parametrize(
+        "phrase", ["hey eva", "hey evie", "hey computer", "okay computer", "hey buddy"]
+    )
+    def test_workable_phrases_are_not_flagged(self, phrase: str) -> None:
+        from myagent.voice.wake import PhraseWake
+
+        assert PhraseWake(phrase).is_risky() is False
+
+    def test_the_carrier_word_does_not_count(self) -> None:
+        """ "hey" is not what identifies the phrase; the next word is."""
+        from myagent.voice.wake import PhraseWake
+
+        assert PhraseWake("hey nova").is_risky() is False
+        assert PhraseWake("hey hi").is_risky() is True
+
+    def test_similarity_is_reported_for_tuning(self) -> None:
+        """--wake-test shows this number so a near miss is actionable."""
+        from myagent.voice.wake import PhraseWake
+
+        matcher = PhraseWake("hey eva")
+        assert matcher.best_similarity("Hey Eva, what's the time?") > 0.9
+        assert matcher.best_similarity("what is the weather today") < 0.6
