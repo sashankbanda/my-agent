@@ -119,3 +119,41 @@ def test_ptt_mode_needs_the_key(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_echo_cooldown_is_short_but_present() -> None:
     """Long enough to swallow the speaker tail, short enough to feel instant."""
     assert 0.2 <= ECHO_COOLDOWN_S <= 1.0
+
+
+class TestResyncDoesNotDeafenTheMic:
+    """Reopening the audio streams resets the wake model's buffer.
+
+    For about a second afterwards the wake word cannot fire, so a resync is a
+    deaf window. It used to run every 30 seconds - including mid-conversation -
+    which is a large share of the time the user is actually trying to talk.
+    """
+
+    def test_resync_is_rare(self) -> None:
+        from myagent.voice.pipeline import IDLE_RESYNC_S
+
+        assert IDLE_RESYNC_S >= 300, "a deaf window every 30s made waking unreliable"
+
+    @staticmethod
+    def _would_resync(pipeline: Pipeline) -> bool:
+        """The listen loop's idle test, in one place."""
+        speaker: Any = pipeline.speaker
+        return (
+            not speaker.is_active
+            and not getattr(pipeline.segmenter, "in_speech", False)
+            and not pipeline._is_attending()
+        )
+
+    def test_attention_blocks_a_resync(self, pipeline: Pipeline) -> None:
+        """Mid-conversation is exactly when going deaf hurts most."""
+        pipeline._refresh_attention()
+        assert pipeline._is_attending() is True
+        assert self._would_resync(pipeline) is False
+
+    def test_idle_still_allows_a_resync(self, pipeline: Pipeline) -> None:
+        """Device switches must still be followed once the user has stopped."""
+        pipeline._attend_until = 0.0
+        pipeline._turn_active = False
+        speaker: Any = pipeline.speaker
+        speaker.active = False
+        assert self._would_resync(pipeline) is True

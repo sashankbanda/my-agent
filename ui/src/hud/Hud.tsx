@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog, useSecuritySocket } from "../SecurityPanel";
 import { KernelClient, TurnEvent } from "../ws";
 import Tasks from "./Tasks";
@@ -106,15 +106,23 @@ function Activity({ events }: { events: KernelEvent[] }) {
         .map((event) => ({ event, ...describeEvent(event) })),
     [events],
   );
+  // Replayed rows are history from previous runs. Without a divider an old
+  // reply reads as something the assistant just said.
+  const lastReplay = rows.map((row) => row.event.replay ?? false).lastIndexOf(true);
   return (
     <section className="card grow">
       <h3>Activity</h3>
       <ul className="feed">
         {rows.length === 0 && <li className="muted">Nothing yet.</li>}
-        {rows.map(({ event, text, kind }) => (
-          <li key={event.id} className={`feed-${kind}`}>
-            <code>{(event.ts ?? "").slice(11, 19)}</code> {text}
-          </li>
+        {rows.map(({ event, text, kind }, index) => (
+          <Fragment key={event.id}>
+            <li className={event.replay ? "feed-history" : `feed-${kind}`}>
+              <code>{(event.ts ?? "").slice(11, 19)}</code> {text}
+            </li>
+            {index === lastReplay && index < rows.length - 1 && (
+              <li className="feed-divider">— earlier —</li>
+            )}
+          </Fragment>
         ))}
         <div ref={bottomRef} />
       </ul>

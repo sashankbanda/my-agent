@@ -267,6 +267,11 @@ class Overlay:
     def _apply(self, event: dict[str, Any]) -> None:
         kind = event.get("type")
         data = event.get("data") or {}
+        # The kernel replays recent history when a UI connects, which is right
+        # for the activity log and wrong for a status orb: it showed a sentence
+        # from hours ago as if the assistant had just said it.
+        if event.get("replay"):
+            return
         if kind == "_connected":
             self.state = "idle"
             self.caption_text = "connected"

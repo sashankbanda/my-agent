@@ -461,6 +461,39 @@ class TestLanguageDrift:
         assert complexity.wrong_language("reply in chinese please", "你好") is False
         assert complexity.wrong_language("translate this to hindi", "नमस्ते") is False
 
+    @pytest.mark.parametrize(
+        ("answer", "label"),
+        [
+            (
+                "razon por la cual las burbujas flotan en agua es debido a que tienen "
+                "un coeficiente de densidad menor",
+                "spanish",
+            ),
+            (
+                "Je suis un assistant, comment puis-je vous aider dans cette journee",
+                "french",
+            ),
+            (
+                "Die Rekursion ist ein Verfahren, bei dem eine Funktion sich selbst aufruft",
+                "german",
+            ),
+        ],
+    )
+    def test_drift_within_the_latin_alphabet_is_caught(self, answer: str, label: str) -> None:
+        """Observed live: the 3B answered an English question in Spanish.
+
+        A script check sails straight past that, so function words decide it.
+        """
+        assert complexity.wrong_language("tell me something interesting", answer) is True
+
+    def test_english_quoting_a_foreign_phrase_is_fine(self) -> None:
+        answer = "A classic dish is paella con pollo, which comes from Valencia."
+        assert complexity.wrong_language("name a spanish dish", answer) is False
+
+    def test_short_answers_are_left_alone(self) -> None:
+        """Too few words to judge; a needless retry on every turn is worse."""
+        assert complexity.wrong_language("what is the time", "It is 8:01 AM.") is False
+
     def test_empty_text_is_not_drift(self) -> None:
         assert complexity.wrong_language("hi", "") is False
 

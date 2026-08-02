@@ -275,13 +275,55 @@ def _foreign_script_share(text: str) -> float:
     return foreign / len(letters)
 
 
+# A different script is easy to spot; a different *language in the same
+# script* is not. The 3B drifted into Spanish on an English question, which the
+# script check sails straight past. Function words are the cheap giveaway:
+# essentially every English sentence of any length contains one of these.
+_ENGLISH_WORDS = (
+    "the and is are was were you your that this with for from have has had not "
+    "can will what when which there their about would should its they them but "
+    "because how why been being does did into than then our"
+)
+# Function words from the languages a multilingual model drifts into. Chosen to
+# avoid English homographs ("son", "die", "a" are deliberately absent).
+_OTHER_WORDS = (
+    "que por para con una los las del como pero mas esta estan porque muy "  # es
+    "les des est une pour dans avec sur pas vous nous cette sont ils elle "  # fr
+    "der das und ist nicht sie mit auf fur ein eine auch wird sind "  # de
+    "nao uma voce tambem isso seu "  # pt
+    "che non questo della anche perche sono gli"  # it
+)
+_ENGLISH_MARKERS = frozenset(_ENGLISH_WORDS.split())
+_OTHER_MARKERS = frozenset(_OTHER_WORDS.split())
+MIN_WORDS_FOR_LANGUAGE_CHECK = 6
+MIN_OTHER_MARKERS = 2
+
+
+def _looks_like_another_language(answer: str) -> bool:
+    """True when a Latin-script answer is clearly not English.
+
+    Deliberately conservative: it demands *zero* English function words and
+    several foreign ones, so an English sentence quoting a foreign phrase is
+    never flagged. Missing a drift costs one odd reply; a false positive costs
+    a needless retry on every turn.
+    """
+    words = re.findall(r"[a-zà-öø-ÿ']+", answer.lower())
+    if len(words) < MIN_WORDS_FOR_LANGUAGE_CHECK:
+        return False
+    if any(word in _ENGLISH_MARKERS for word in words):
+        return False
+    return sum(1 for word in words if word in _OTHER_MARKERS) >= MIN_OTHER_MARKERS
+
+
 def wrong_language(user_text: str, answer: str) -> bool:
-    """True when the reply switched scripts on the user unasked."""
+    """True when the reply switched language on the user unasked."""
     if _LANGUAGE_REQUEST.search(user_text):
         return False  # they asked for another language
     if _foreign_script_share(user_text) > _FOREIGN_SHARE:
         return False  # they wrote in that script; matching it is right
-    return _foreign_script_share(answer) > _FOREIGN_SHARE
+    if _foreign_script_share(answer) > _FOREIGN_SHARE:
+        return True
+    return _looks_like_another_language(answer)
 
 
 def should_escalate(answer: str) -> tuple[bool, str]:

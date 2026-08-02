@@ -64,8 +64,16 @@ BARGE_IN_MS = 350  # sustained speech needed to interrupt playback (echo guard)
 ECHO_COOLDOWN_S = 0.4  # ignore the mic briefly after playback (speaker tail)
 RECONNECT_DELAY_S = 3.0
 DEAD_INPUT_TRIP_S = 6.0  # this much digital silence -> re-probe input devices
-IDLE_RESYNC_S = 30.0  # while idle, re-open streams so they follow device switches
+# Re-opening the streams is how the satellite follows a device switch, but it
+# is not free: the mic is closed, PortAudio re-enumerates, and the wake model's
+# buffer is reset, so for roughly a second afterwards the wake word cannot fire.
+# At 30s that deaf window recurred constantly and made waking feel unreliable.
+# The dead-input watchdog already catches a mic that goes silent within 6s, so
+# this only needs to cover the rarer case of switching to a device that is also
+# live - five minutes is plenty.
+IDLE_RESYNC_S = 300.0
 MUTE_HOTKEY = "ctrl+alt+m"
+NEAR_MISS_SHARE = 0.5  # log wake scores this close to the threshold
 
 # Spoken "that's enough" - closes the follow-up window so the next thing you
 # say to somebody else in the room is not treated as a request. Cheaper and
@@ -282,7 +290,13 @@ class Pipeline:
             if watchdog.feed(None if frame is None else float(np.abs(frame).max())):
                 await self._rebuild_audio("input went silent", probe=True)
                 continue
-            idle = not self.speaker.is_active and not self.segmenter.in_speech
+            # Never resync mid-conversation: going deaf for a second while the
+            # user is mid-sentence is exactly when it hurts most.
+            idle = (
+                not self.speaker.is_active
+                and not self.segmenter.in_speech
+                and not self._is_attending()
+            )
             if idle and time.monotonic() - self._last_resync >= IDLE_RESYNC_S:
                 await self._rebuild_audio("periodic idle resync", probe=False)
                 continue
@@ -354,10 +368,18 @@ class Pipeline:
             chunk = self._wake_buffer[:WAKE_CHUNK_SAMPLES]
             self._wake_buffer = self._wake_buffer[WAKE_CHUNK_SAMPLES:]
             if self.wake.process(chunk):
-                log.info("wake_word")
+                log.info("wake_word", score=round(self.wake.last_score, 2))
                 self._refresh_attention()
                 self.segmenter.reset()
                 self.vad.reset()
+            elif self.wake.last_score >= self.settings.wake.threshold * NEAR_MISS_SHARE:
+                # "It didn't wake up" is unactionable; a near miss says whether
+                # it heard you at all and how far off the threshold is.
+                log.info(
+                    "wake_near_miss",
+                    score=round(self.wake.last_score, 2),
+                    threshold=self.settings.wake.threshold,
+                )
 
     async def receive(self, socket: websockets.ClientConnection) -> None:
         """Kernel frames -> sentence queue / attention bookkeeping."""

@@ -615,3 +615,19 @@ button.danger {
 .error.small {
   color: #ff8f8f;
 }
+
+/* Replayed history: present for context, never mistakable for live activity. */
+.feed-history {
+  color: #5c6478;
+  font-style: italic;
+}
+
+.feed-divider {
+  color: #4a5164;
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 1px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
