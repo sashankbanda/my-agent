@@ -151,5 +151,6 @@ def load_builtin_tools() -> None:
         files,
         memory_tools,
         research,
+        schedules,
         shell,
     )
