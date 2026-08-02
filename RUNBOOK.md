@@ -144,7 +144,14 @@ phrase. Two consequences:
 - Because the whole utterance is transcribed, **"hey ev what's the time" wakes
   it and asks in one breath** — no pause needed.
 
-**Test a phrase before committing to it:**
+**Don't know which phrase to pick? Let it measure your voice** — this tries
+several and ranks them by how reliably *you* trigger each one:
+
+```
+uv run python -m myagent.voice --wake-tune
+```
+
+**Or test one phrase you have in mind:**
 
 ```
 uv run python -m myagent.voice --wake-test --phrase "hey eva"
@@ -171,6 +178,38 @@ through actual speech-to-text:
 One short syllable ("ev") has no separation at all — it scores the same
 against your wake word as against random conversation. One extra vowel fixes
 it. The startup log warns you if your phrase looks too short.
+
+### Answering only your voice
+
+So a housemate, a colleague, or the TV saying the wake word doesn't wake it.
+Record yourself saying the wake phrase five times:
+
+```
+uv run python -m myagent.voice --enrol
+```
+
+It reports how consistent your samples were and sets the accept threshold
+from that measurement — a voice that varies gets a lower bar automatically.
+Then switch it on in [config/voice.yaml](config/voice.yaml):
+
+```yaml
+wake:
+  only_my_voice: true
+```
+
+**How it works, and its limits.** Your enrolment recordings become a compact
+description of your voice (MFCCs — the standard way of describing vocal-tract
+shape), and the waking utterance is compared against it. Because it's always
+the *same phrase*, this is the easy case, and it needs no neural model, no
+PyTorch, no cloud.
+
+It's a **filter, not a lock**. It reliably rejects clearly different voices;
+a similar voice saying your exact wake phrase is harder. It gates *attention*
+only — every action still goes through the permission broker, and anyone with
+physical access to an unlocked laptop has easier options than imitating you.
+
+Turning it on without enrolling first is ignored (with a warning), so it can
+never lock you out of your own assistant.
 
 Then restart Terminal 2 (`Ctrl+C`, then `uv run python -m myagent.voice`).
 

@@ -45,6 +45,7 @@ import numpy as np
 import websockets
 
 from myagent.logging import get_logger
+from myagent.voice import speaker
 from myagent.voice.audio import (
     DeadAudioWatchdog,
     MicStream,
@@ -101,6 +102,20 @@ class Pipeline:
         self.wake: WakeDetector | None = None
         self.phrase_wake: PhraseWake | None = None
         self.wake_stt: Transcriber | None = None
+        # Only answer the enrolled voice, if the user asked for that AND
+        # actually enrolled. Turning the flag on without a profile is ignored
+        # rather than fatal - it must not lock anyone out of their assistant.
+        self.voice_profile = (
+            speaker.VoiceProfile.load(speaker.profile_path(models_dir))
+            if settings.wake.only_my_voice
+            else None
+        )
+        if settings.wake.only_my_voice and self.voice_profile is None:
+            log.warning(
+                "only_my_voice_ignored",
+                why="no enrolled voice",
+                fix="uv run python -m myagent.voice --enrol",
+            )
         if settings.mode == "wake":
             if settings.wake.phrase:
                 self.phrase_wake = PhraseWake(settings.wake.phrase, settings.wake.phrase_similarity)
@@ -130,6 +145,7 @@ class Pipeline:
         self._barge_needed = max(1, int(BARGE_IN_MS * SAMPLE_RATE / 1000 / FRAME_SAMPLES))
         self._ptt_down = False
         self._reported_listening = False  # debounce for "listening" state events
+        self._verify_next = False  # check the speaker on the next utterance
         self._muted = False
         self._mute_changed = asyncio.Event()  # hotkey -> tell the kernel
         self._loop: asyncio.AbstractEventLoop | None = None  # set once running
@@ -367,6 +383,23 @@ class Pipeline:
                 continue
             log.info("utterance", text=text, seconds=round(utterance.duration_s, 2))
 
+            # Someone else saying the wake word should not wake it. Checked
+            # only on the utterance that opens a turn - mid-conversation the
+            # window is already open, and re-verifying every reply would
+            # reject the owner on one bad recording for no security gain.
+            # With a wake *model* the trigger is 80 ms of audio with no
+            # utterance to test, so the first thing said after it is checked
+            # instead; with a wake *phrase* the waking utterance itself is.
+            if self.voice_profile is not None and (needs_wake or self._verify_next):
+                self._verify_next = False
+                accepted, score = self.voice_profile.matches(utterance.audio)
+                if not accepted:
+                    log.info("wake_rejected_other_voice", score=round(score, 3))
+                    self._attend_until = 0.0
+                    self._turn_active = False
+                    await self._report_state(socket, "idle")
+                    continue
+
             if needs_wake:
                 assert self.phrase_wake is not None
                 woke, remainder = self.phrase_wake.check(text)
@@ -404,6 +437,7 @@ class Pipeline:
             self._wake_buffer = self._wake_buffer[WAKE_CHUNK_SAMPLES:]
             if self.wake.process(chunk):
                 log.info("wake_word", score=round(self.wake.last_score, 2))
+                self._verify_next = self.voice_profile is not None
                 self._refresh_attention()
                 self.segmenter.reset()
                 self.vad.reset()

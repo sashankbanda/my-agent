@@ -38,6 +38,10 @@ class WakeSettings(BaseModel):
     # How close the transcription must be to `phrase` (0-1). Speech-to-text
     # mangles short phrases, so this is forgiving by default.
     phrase_similarity: float = 0.72
+    # Only respond when the wake word is said by the enrolled voice. Needs
+    # `python -m myagent.voice --enrol` first; ignored until then, so turning
+    # it on cannot lock you out of your own assistant.
+    only_my_voice: bool = False
     # Seconds of attention after the assistant STOPS SPEAKING. Every exchange
     # refreshes it, so a real back-and-forth never needs the wake word again.
     followup_window: float = 30.0

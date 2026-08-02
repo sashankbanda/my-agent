@@ -7,6 +7,10 @@ Options:
                        score - the first thing to run when voice seems deaf
     --wake-test [SEC]  try a custom wake phrase live; --phrase "hey ev" to
                        test one without editing the config first
+    --wake-tune        say several candidate phrases and rank them by how
+                       reliably YOUR voice triggers each one
+    --enrol [N]        record your voice N times (default 5) so the wake
+                       word only works when YOU say it
     --config PATH      alternate voice.yaml
 """
 
@@ -205,6 +209,147 @@ def wake_test(seconds: int, phrase: str | None) -> None:
         print(f'  Working. Put this in config/voice.yaml:\n    wake:\n      phrase: "{chosen}"')
 
 
+def _record_once(mic: object, vad: object, segmenter: object, timeout: float) -> object:
+    """Wait for one complete utterance, or None if the user said nothing."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        frame = mic.get(timeout=1.0)  # type: ignore[attr-defined]
+        if frame is None:
+            continue
+        utterance = segmenter.feed(frame, vad(frame))  # type: ignore[operator,attr-defined]
+        if utterance is not None:
+            vad.reset()  # type: ignore[attr-defined]
+            return utterance
+    return None
+
+
+def wake_tune(candidates: list[str], repeats: int) -> None:
+    """Say each candidate a few times; rank them by how well YOUR voice lands.
+
+    The built-in models scored 0.00 for this user - accent is the variable
+    that matters, and no amount of reasoning about phonetics substitutes for
+    measuring it. This is the measurement.
+    """
+    import sounddevice as sd
+
+    from myagent.voice.audio import MicStream, probe_live_input
+    from myagent.voice.stt import Transcriber
+    from myagent.voice.tuning import PhraseScore, control_ceiling, rank, recommend
+    from myagent.voice.vad import SileroVad, SpeechSegmenter
+    from myagent.voice.wake import PhraseWake
+
+    settings = load_voice_settings()
+    models_dir = settings.resolved_models_dir()
+    device: str | int | None = settings.input_device
+    if device is None:
+        device = probe_live_input()
+    print(f"input device: {sd.query_devices(device if device is not None else None)['name']}")
+    print(f"\nTesting {len(candidates)} wake phrases, {repeats} times each.")
+    print("Say each one clearly when prompted, then pause. Nothing is uploaded.\n")
+
+    stt = Transcriber(settings.stt.model_copy(update={"engine": "local"}), models_dir)
+    vad = SileroVad(models_dir)
+    segmenter = SpeechSegmenter(settings.vad)
+    mic = MicStream(device)
+    mic.start()
+    scores: list[PhraseScore] = []
+    try:
+        for phrase in candidates:
+            score = PhraseScore(phrase=phrase, best_control=control_ceiling(phrase))
+            matcher = PhraseWake(phrase, settings.wake.phrase_similarity)
+            for attempt in range(repeats):
+                print(f'  say "{phrase}"  ({attempt + 1}/{repeats}) ... ', end="", flush=True)
+                segmenter.reset()
+                utterance = _record_once(mic, vad, segmenter, timeout=8.0)
+                if utterance is None:
+                    print("nothing heard")
+                    score.attempts += 1
+                    continue
+                text = stt.transcribe(utterance.audio)  # type: ignore[attr-defined]
+                score.attempts += 1
+                score.heard.append(text)
+                matched, _ = matcher.check(text)
+                score.hits += matched
+                mark = "OK " if matched else "no "
+                print(f"{mark} heard {text!r} ({matcher.best_similarity(text):.2f})")
+            scores.append(score)
+            print()
+    finally:
+        mic.stop()
+
+    print(f"\n{'phrase':18} {'recognised':>11} {'avg score':>10} {'margin':>7}  verdict")
+    for score in rank(scores):
+        print(
+            f"{score.phrase:18} {score.hits:>5}/{score.attempts:<5} "
+            f"{score.mean_similarity:>10.2f} {score.margin:>7.2f}  {score.verdict}"
+        )
+    print(f"\n{recommend(scores)}")
+
+
+def enrol_voice(samples: int) -> None:
+    """Record the wake phrase a few times and remember whose voice it is.
+
+    Enrolment is text-dependent on purpose: it records the same phrase the
+    assistant will later hear, which is the easiest case for verification and
+    the reason a small classical method is enough here.
+    """
+    import sounddevice as sd
+
+    from myagent.voice import speaker
+    from myagent.voice.audio import MicStream, probe_live_input
+    from myagent.voice.vad import SileroVad, SpeechSegmenter
+
+    settings = load_voice_settings()
+    models_dir = settings.resolved_models_dir()
+    phrase = settings.wake.phrase or settings.wake.model.replace("_", " ")
+    device: str | int | None = settings.input_device
+    if device is None:
+        device = probe_live_input()
+    print(f"input device: {sd.query_devices(device if device is not None else None)['name']}")
+    print(f'\nSay "{phrase}" {samples} times, pausing between each.')
+    print("Speak normally - how you will actually say it, from where you usually sit.\n")
+
+    vad = SileroVad(models_dir)
+    segmenter = SpeechSegmenter(settings.vad)
+    mic = MicStream(device)
+    mic.start()
+    recordings = []
+    try:
+        while len(recordings) < samples:
+            print(f'  say "{phrase}"  ({len(recordings) + 1}/{samples}) ... ', end="", flush=True)
+            segmenter.reset()
+            utterance = _record_once(mic, vad, segmenter, timeout=10.0)
+            if utterance is None:
+                print("nothing heard, try again")
+                continue
+            recordings.append(utterance.audio)  # type: ignore[attr-defined]
+            print(f"got it ({utterance.duration_s:.1f}s)")  # type: ignore[attr-defined]
+    except KeyboardInterrupt:
+        print("\ncancelled")
+        return
+    finally:
+        mic.stop()
+
+    try:
+        profile = speaker.enrol(recordings, phrase=phrase)
+    except ValueError as exc:
+        print(f"\nCould not enrol: {exc}")
+        return
+    profile.save(speaker.profile_path(models_dir))
+
+    # Say how well it separated the samples, so the number is not a mystery.
+    scores = [profile.matches(audio)[1] for audio in recordings]
+    print(f"\nEnrolled from {profile.samples} recordings.")
+    print(f"  your samples scored {min(scores):.2f}-{max(scores):.2f} against each other")
+    print(f"  accept threshold set to {profile.threshold:.2f}")
+    print("\nTurn it on in config/voice.yaml:")
+    print("  wake:\n    only_my_voice: true")
+    print(
+        "\nThis is a filter, not a lock: it gates attention only, and every "
+        "action\nstill goes through the permission broker."
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list-devices", action="store_true", help="print audio devices")
@@ -227,6 +372,23 @@ def main() -> None:
         help="say a custom wake phrase and see whether it triggers",
     )
     parser.add_argument("--phrase", default=None, help='wake phrase to test, e.g. "hey ev"')
+    parser.add_argument(
+        "--wake-tune",
+        action="store_true",
+        help="try several wake phrases and rank them for your voice",
+    )
+    parser.add_argument("--repeats", type=int, default=3, help="attempts per phrase when tuning")
+    parser.add_argument(
+        "--enrol",
+        "--enroll",
+        dest="enrol",
+        nargs="?",
+        const=5,
+        type=int,
+        default=None,
+        metavar="N",
+        help="record your voice N times so it can tell you from other people",
+    )
     parser.add_argument("--config", type=Path, default=None, help="alternate voice.yaml")
     args = parser.parse_args()
 
@@ -242,6 +404,17 @@ def main() -> None:
 
     if args.wake_test is not None:
         wake_test(args.wake_test, args.phrase)
+        return
+
+    if args.enrol is not None:
+        enrol_voice(args.enrol)
+        return
+
+    if args.wake_tune:
+        from myagent.voice.tuning import DEFAULT_CANDIDATES
+
+        chosen = [args.phrase] if args.phrase else list(DEFAULT_CANDIDATES)
+        wake_tune(chosen, args.repeats)
         return
 
     settings = load_voice_settings(args.config)

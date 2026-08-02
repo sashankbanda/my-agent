@@ -44,6 +44,14 @@ wake:
   # phrases, so lower this if your wake word gets missed, raise it if ordinary
   # conversation keeps triggering it.
   phrase_similarity: 0.72
+
+  # Answer only when YOU say the wake word, not a housemate or the TV. Record
+  # your voice first:
+  #     uv run python -m myagent.voice --enrol
+  # Ignored until you do, so switching it on cannot lock you out. It is a
+  # filter, not a lock: it gates attention only, and every action still goes
+  # through the permission broker.
+  only_my_voice: false
   # Seconds of attention AFTER the assistant finishes speaking. Each exchange
   # refreshes this, so a continuing conversation never needs the wake word
   # again - it only closes after this much real silence.
