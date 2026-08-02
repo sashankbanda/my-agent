@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from myagent.config import Settings
 from myagent.core.loop import AgentLoop
 from myagent.memory import store, tools_builtin
-from myagent.scheduler_lite import run_snapshot_now
+from myagent.scheduler import run_snapshot_now
 from myagent.vault.remote import VaultUnavailableError
 from myagent.vault.snapshot import last_snapshot, verify_manifest_chain
 

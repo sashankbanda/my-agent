@@ -67,6 +67,18 @@ class VaultSettings(BaseModel):
     keep_monthly: int = 12
 
 
+class SchedulerSettings(BaseModel):
+    """Scheduled and recurring tasks (M5).
+
+    ``poll_seconds`` is the resolution of the whole scheduler: a cron slot is
+    noticed at most this late. 30s is well below the one-minute granularity of
+    cron itself, and the poll is a single indexed query.
+    """
+
+    enabled: bool = True
+    poll_seconds: float = 30.0
+
+
 class ToolSettings(BaseModel):
     """Capability limits for the tool layer (M4).
 
@@ -96,6 +108,7 @@ class Settings(BaseModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
     vault: VaultSettings = Field(default_factory=VaultSettings)
     tools: ToolSettings = Field(default_factory=ToolSettings)
+    scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings)
     features: dict[str, bool] = Field(default_factory=dict)
 
     def db_path(self) -> Path:

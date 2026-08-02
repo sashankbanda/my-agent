@@ -20,6 +20,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 import myagent
+from myagent import scheduler as scheduling
 from myagent.bus import broadcaster
 from myagent.config import Settings
 from myagent.core.loop import AgentLoop
@@ -32,10 +33,10 @@ from myagent.gateway.quota import QuotaGovernor
 from myagent.gateway.registry import load_registry
 from myagent.gateway.warmup import warm_local_models
 from myagent.logging import get_logger
-from myagent.scheduler_lite import nightly_snapshots
 from myagent.security.broker import PermissionBroker
 from myagent.security.confirm import ConfirmationService
-from myagent.server import chat, control, events_ws, memory, security, voice_ws
+from myagent.server import chat, control, events_ws, memory, security, tasks, voice_ws
+from myagent.tools import browsing
 from myagent.tools.executor import ToolExecutor
 from myagent.tools.registry import load_builtin_tools
 
@@ -109,18 +110,32 @@ def create_app(
             app_.state.loop = built_loop
             app_.state.broker = built_broker
             app_.state.confirmations = built_confirmations
-        snapshot_task = None
-        if settings.vault.enabled:
-            snapshot_task = asyncio.create_task(nightly_snapshots(settings, db_path))
+        # One clock for everything: the nightly backup is an ordinary schedule
+        # row, so it is visible and pausable in the task dashboard like any
+        # task the user creates.
+        scheduler_task = None
+        if settings.scheduler.enabled:
+            if settings.vault.enabled:
+                scheduling.ensure_snapshot_schedule(db_path, settings.vault.snapshot_hour)
+            engine = scheduling.Scheduler(
+                db_path,
+                scheduling.make_runner(app_.state.loop, settings, db_path),
+                settings,
+            )
+            app_.state.scheduler = engine
+            scheduler_task = asyncio.create_task(
+                engine.run_forever(settings.scheduler.poll_seconds)
+            )
         warm_task = None
         if settings.tools.local_tier and loop is None:
             # Load the on-device model now so the first easy question is fast.
             warm_task = asyncio.create_task(warm_local_models(load_registry()))
         log.info("kernel_started", db=str(db_path), migrations_applied=applied)
         yield
-        for task in (snapshot_task, warm_task):
+        for task in (scheduler_task, warm_task):
             if task is not None:
                 task.cancel()
+        browsing.shutdown()  # a leaked Chromium outlives the kernel otherwise
         with connection(db_path) as conn:
             append_event(conn, EventType.APP_STOPPING)
         log.info("kernel_stopping")
@@ -130,6 +145,7 @@ def create_app(
     app.include_router(chat.router)
     app.include_router(control.router)
     app.include_router(memory.router)
+    app.include_router(tasks.router)
     app.include_router(voice_ws.router)
     app.include_router(security.router)
     app.include_router(events_ws.router)

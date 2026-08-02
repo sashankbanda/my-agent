@@ -18,6 +18,9 @@ dependencies = [
     "google-auth>=2.56.2",
     "google-auth-oauthlib>=1.4.0",
     "psutil>=7.2.2",
+    "croniter>=6.0.0",
+    "winotify>=1.1.0",
+    "httpx>=0.28",
 ]
 
 [dependency-groups]
@@ -45,6 +48,12 @@ voice = [
     "winrt-windows-foundation>=3.2.1",
     "winrt-windows-foundation-collections>=3.2.1",
 ]
+# Web browsing (M5). Chromium is a ~150 MB download, so this group is opt-in:
+#   uv sync --group web
+#   uv run playwright install chromium
+# The rest of the assistant works without it; the browser tools say so
+# honestly rather than failing obscurely.
+web = ["playwright>=1.49"]
 
 [tool.uv]
 default-groups = ["dev", "voice"]

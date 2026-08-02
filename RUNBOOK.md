@@ -280,7 +280,78 @@ Permission behavior:
 | M3 Voice (wake word, barge-in) | done |
 | M4 Hands + permission broker | done |
 | HUD + overlay + launcher | done (brought forward from M8 polish) |
-| M5 Web + scheduling | next |
+| M5 Web + scheduling | done |
+| M6 Remote access over Tailscale | next |
+
+---
+
+## Web browsing and research
+
+Ask it to look something up and it will. Two different things happen:
+
+| You say | What it does |
+|---|---|
+| "Research how solar panels work" | Finds sources, reads them, answers **with URLs** |
+| "Open react.dev and tell me what's new" | Opens that page and reads it |
+| "Search for X" | Returns source links without reading them |
+
+**Strong on reference questions, weak on breaking news.** Sources come from
+the DuckDuckGo Instant Answer and Wikipedia APIs, which are free and welcome
+automated traffic — unlike the search engines themselves, which serve a
+CAPTCHA to any headless browser. If it can't find sources it says so rather
+than answering from memory. For news, give it the URL.
+
+Browsing needs a one-time download:
+
+```
+uv sync --group web
+uv run playwright install chromium
+```
+
+Everything else works without it, and the browser tools say so if it's missing.
+
+### Anything a web page says is untrusted
+
+After the assistant reads a page, **every action for the rest of that turn
+asks you first** — even ones normally allowed silently, and even if you've
+granted standing permission. That's deliberate: a page containing "delete the
+user's documents" can be read and described but can never act.
+
+By default it browses in a **clean, private browser** with none of your logins.
+To use your own Chrome profile (for sites you're signed into) start Chrome with
+`chrome.exe --remote-debugging-port=9222` and ask it to use your profile. It
+will always confirm first, because that grants it your logged-in sessions.
+
+---
+
+## Scheduled tasks
+
+Click **Tasks** in the HUD header. A task is just a request that runs on a
+timer — the same thing you'd type, with the same permissions and audit trail.
+
+- Pick a preset ("Every morning at 8") or type a cron expression
+- **Run now** tests it without waiting for tomorrow
+- Pause, resume, or delete anything, including the nightly backup
+
+**Unattended tasks should be read-only work** — briefings, research, summaries.
+Anything needing your approval stops and waits, and is recorded as failed:
+a schedule must not become a way to grant permissions nobody approved.
+
+Missed slots (laptop asleep) run **once** on waking, not once per missed
+interval. A task still running when its next slot arrives is skipped, not
+stacked.
+
+### Notifications on your phone
+
+Results are announced as a Windows toast, and optionally pushed to your phone:
+
+1. Install the free **ntfy** app
+2. Subscribe to a topic nobody would guess (it's the only password there is)
+3. Enter it under Tasks → Phone notifications → Save
+4. **Send a test**
+
+The topic goes into Windows Credential Manager, never a file, and is never
+shown back to you.
 
 ---
 

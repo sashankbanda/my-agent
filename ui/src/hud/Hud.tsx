@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog, useSecuritySocket } from "../SecurityPanel";
 import { KernelClient, TurnEvent } from "../ws";
+import Tasks from "./Tasks";
 import { KernelEvent, Status, describeEvent, useKernel } from "./useKernel";
 
 // The HUD: everything the terminals used to tell you, in one screen.
@@ -127,6 +128,7 @@ export default function Hud() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showTasks, setShowTasks] = useState(false);
   const sessionRef = useRef<string | null>(null);
   const chatBottom = useRef<HTMLDivElement>(null);
 
@@ -217,10 +219,14 @@ export default function Hud() {
   return (
     <div className="hud">
       {pending.length > 0 && <ConfirmDialog request={pending[0]} onDecide={decide} />}
+      {showTasks && <Tasks onClose={() => setShowTasks(false)} />}
 
       <header className="hud-head">
         <h1>MyAgent</h1>
         <StatusBar status={status} online={online} />
+        <button onClick={() => setShowTasks(true)} title="Scheduled and recurring tasks">
+          Tasks
+        </button>
         <button
           className={muted ? "danger" : ""}
           onClick={() => void toggleMute()}

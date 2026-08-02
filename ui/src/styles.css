@@ -492,3 +492,126 @@ button.danger {
   background: #23355c;
   color: #bfd4ff;
 }
+
+/* ---------- task dashboard (M5) ---------- */
+
+.panel-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  z-index: 40;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.panel.wide {
+  background: var(--panel);
+  border: 1px solid #3a4560;
+  border-radius: 14px;
+  padding: 18px;
+  max-width: 760px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.panel-head h2 {
+  font-size: 16px;
+}
+
+.schedule-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.schedule-form input,
+.schedule-form select,
+.schedule-form textarea {
+  background: var(--bg);
+  border: 1px solid #333c52;
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  flex: 1 1 180px;
+}
+
+.schedule-form textarea {
+  flex: 1 1 100%;
+  resize: vertical;
+}
+
+/* The raw cron expression stays visible but does not dominate the row. */
+.schedule-form .cron {
+  flex: 0 0 130px;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.schedule-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.schedule-list li {
+  border: 1px solid #2a3145;
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.schedule-list li.paused {
+  opacity: 0.55;
+}
+
+.schedule-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.schedule-head code {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.schedule-task {
+  word-break: break-word;
+}
+
+.schedule-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.schedule-actions button {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.dot.warn {
+  background: #e6b054;
+}
+
+.error.small {
+  color: #ff8f8f;
+}

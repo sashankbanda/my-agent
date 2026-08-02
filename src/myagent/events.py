@@ -62,6 +62,12 @@ class EventType(StrEnum):
     KILL_SWITCH_RELEASED = "KillSwitchReleased"
     BUDGET_EXCEEDED = "BudgetExceeded"
 
+    # M5 - web and time
+    SCHEDULE_ADDED = "ScheduleAdded"
+    SCHEDULE_REMOVED = "ScheduleRemoved"
+    SCHEDULE_FIRED = "ScheduleFired"
+    NOTIFICATION_SENT = "NotificationSent"
+
 
 def append_event(
     conn: sqlite3.Connection,

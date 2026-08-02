@@ -24,7 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from myagent.config import load_settings
-from myagent.scheduler_lite import run_snapshot_now
+from myagent.scheduler import run_snapshot_now
 from myagent.vault import crypto, restore
 from myagent.vault.remote import make_vault
 
